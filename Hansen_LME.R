@@ -5,7 +5,7 @@ library(MuMIn)  # for R-squared calculations
 source("hansen_distubence_explore.R")
 
 #filter data for +/- 3 years 
-dat.lme <- flossdvi[abs(flossdvi$yrfromdisturb) <= 3 & 
+dat.lme <- flossdvi[abs(flossdvi$yrfromdisturb) <= 5 & 
                        !is.na(flossdvi$MidGreendown_DOY) & 
                        !is.na(flossdvi$yrfromdisturb), ]
 
@@ -66,3 +66,14 @@ anova(NDVItest)
 NDVItest2 <- lme(NDVI ~ as.factor(yrfromdisturb), random = list(Label = ~1), data = dat.lme)
 summary(NDVItest2)
 anova(NDVItest2)
+
+# Looking at groupign pre & post disturbance 
+dat.lme$yrGroup[dat.lme$yrfromdisturb<0] <- "before"
+dat.lme$yrGroup[dat.lme$yrfromdisturb==0] <- "during"
+dat.lme$yrGroup[dat.lme$yrfromdisturb>0] <- "after"
+dat.lme$yrGroup <- factor(dat.lme$yrGroup, levels=c("before", "during", "after"))
+summary(dat.lme)
+
+timeGroupLME <- lme(MidGreendown_DOY ~ yrGroup, random = list(Year=~1, Label = ~1), data = dat.lme)
+summary(timeGroupLME)
+anova(timeGroupLME)
