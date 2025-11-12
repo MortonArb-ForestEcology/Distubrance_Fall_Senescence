@@ -11,6 +11,15 @@ library(tidyr)
 # Read forest loss data
 floss.dat <- read_sheet("https://docs.google.com/spreadsheets/d/1glBSZbN2uHsR0PzRiEAV0W1CDGh8kGb_-gQmxT2sVpw/edit?gid=1258618079#gid=1258618079")
 
+summary(floss.dat)
+head(floss.dat)
+dim(floss.dat)
+
+ggplot(data=floss.dat) +
+  geom_point(aes(x=longitude, y=latitude))
+
+head(data.frame(floss.dat))
+
 # Clean year data
 floss.dat$Year <- as.numeric(floss.dat$Year)
 floss.dat$Year <- ifelse(floss.dat$Year < 10, paste0("200", floss.dat$Year), paste0("20", floss.dat$Year))
@@ -47,6 +56,12 @@ flossdvi$Senescence_Date <- as.Date(flossdvi$Senescence_Date)
 flossdvi$MidGreendown_Date <- as.Date(flossdvi$MidGreendown_Date)
 flossdvi$Year <- as.numeric(flossdvi$Year)
 
+summary(flossdvi)
+head(flossdvi)
+dim(flossdvi)
+length(unique(flossdvi$Label))
+
+
 # NDVI by label(plot)
 ggplot(flossdvi, aes(x = Year, y = NDVI, color = as.factor(Label))) +
   geom_line() +
@@ -65,6 +80,8 @@ ggplot(flossdvi, aes(x = as.factor(Year), y = NDVI)) +
 mndviyr <- flossdvi %>%
   group_by(Year) %>%
   summarize(Mean.NDVI = mean(NDVI, na.rm = TRUE))
+
+summary(mndviyr)
 
 # Individual disturbance plots with trend comparison
 pltdistNDVI <- function(data, label, dstrbyr) {

@@ -1,8 +1,9 @@
 library(nlme)
 library(MuMIn)  # for R-squared calculations
 
-# Load the main analysis
+# Load the main analysis # CR: Don't do this.  Save an output from that script and load it here!
 source("hansen_distubence_explore.R")
+
 #filter data for +/- 3 years 
 dat.lme <- flossdvi[abs(flossdvi$yrfromdisturb) <= 3 & 
                        !is.na(flossdvi$MidGreendown_DOY) & 
@@ -10,6 +11,7 @@ dat.lme <- flossdvi[abs(flossdvi$yrfromdisturb) <= 3 &
 
 # Check data structure to make sure there aren't glaring errors 
 str(flossdvi[, c("Year", "Label", "MidGreendown_DOY", "dstrbyr", "yrfromdisturb")])
+head(dat.lme)
 
 # Check sample sizes to ensure there are an equal number of labels (sample size) and no .Na values 
 length(unique(flossdvi$Label))
@@ -20,7 +22,7 @@ sum(is.na(flossdvi$MidGreendown_DOY))
 range(flossdvi$yrfromdisturb, na.rm = TRUE)
 
 #Model accounting for weather and site as a random effect
-lmemod <- lme(MidGreendown_DOY ~ yrfromdisturb, random = list(Year = ~1, Label = ~1), data = dat.lme)
+lmemod <- lme(MidGreendown_DOY ~ as.factor(yrfromdisturb), random = list(Year = ~1, Label = ~1), data = dat.lme)
 
 #testing for signifigance
 summary(lmemod)
@@ -29,7 +31,7 @@ anova(lmemod)
 #aaaannnnd there does not seem to be
 
 #model for just weather 'oops all weather'
-lmemodwe <- lme(MidGreendown_DOY ~ yrfromdisturb,random = ~1|Year, data = dat.lme)
+lmemodwe <- lme(MidGreendown_DOY ~ as.factor(yrfromdisturb),random = ~1|Year, data = dat.lme)
 
 # signif testing
 summary(lmemodwe)
@@ -39,7 +41,7 @@ anova(lmemodwe)
 # again no signifigance 
 
 #model for just site 'oops all sites'
-lmemodsit <- lme(MidGreendown_DOY ~ yrfromdisturb, random = ~1|Label, data = dat.lme)
+lmemodsit <- lme(MidGreendown_DOY ~ as.factor(yrfromdisturb), random = ~1|Label, data = dat.lme)
 
 summary(lmemodsit)
 r.squaredGLMM(lmemodsit)
@@ -47,3 +49,20 @@ anova(lmemodsit)
 
 #three strikes
 ("you're out")
+
+
+
+# Test to see if NDVI is lower in the year of disturbance to make sure something isn't looking weird
+ggplot(data=dat.lme) +
+  geom_line(aes(x=yrfromdisturb, y=NDVI, color=Label)) +
+  geom_vline(xintercept=0) +
+  theme_bw()
+
+
+NDVItest <- lme(NDVI ~ relevel(as.factor(yrfromdisturb), "0"), random = list(Year = ~1, Label = ~1), data = dat.lme)
+summary(NDVItest)
+anova(NDVItest)
+
+NDVItest2 <- lme(NDVI ~ as.factor(yrfromdisturb), random = list(Label = ~1), data = dat.lme)
+summary(NDVItest2)
+anova(NDVItest2)
