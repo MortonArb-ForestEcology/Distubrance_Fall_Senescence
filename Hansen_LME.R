@@ -77,3 +77,8 @@ summary(dat.lme)
 timeGroupLME <- lme(MidGreendown_DOY ~ yrGroup, random = list(Year=~1, Label = ~1), data = dat.lme)
 summary(timeGroupLME)
 anova(timeGroupLME)
+
+
+timeGroupLME2 <- lme(NDVI ~ yrGroup, random = list(Year=~1, Label = ~1), data = dat.lme)
+summary(timeGroupLME2)
+anova(timeGroupLME2)
