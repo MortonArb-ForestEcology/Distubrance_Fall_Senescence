@@ -7,9 +7,29 @@ library(sf)
 library(jsonlite)
 library(readr)
 library(tidyr)
+library(readr)
 
-# Read forest loss data
-floss.dat <- read_sheet("https://docs.google.com/spreadsheets/d/1glBSZbN2uHsR0PzRiEAV0W1CDGh8kGb_-gQmxT2sVpw/edit?gid=1258618079#gid=1258618079")
+# Read in the CSV exported
+floss.dat <- read_csv("~/Google Drive/My Drive/Reidy_research/Hansen exploration/forest_loss_polygons.csv")
+View(floss.dat)
+head(floss.dat)
+
+#  Create the Year column from the label, label is how hansen stores year of loss 
+floss.dat$Year <- floss.dat$label
+
+
+# Create a new   Label column in format GDyyyy_n this will be our unique polygon identifier
+# Create a full year by adding 2000 to the year column
+floss.dat$Year <- floss.dat$Year + 2000
+
+# Add row number for the label suffix to account for polygons that may have the same year of loss 
+floss.dat$RowNum <- 1:nrow(floss.dat)
+
+# Create the Label: GD + year + _ + row number for a unique label
+floss.dat$Label <- paste0("GD", floss.dat$Year, "_", floss.dat$RowNum)
+
+# Select and reorder columns 
+floss.dat <- floss.dat[, c("Label", "Year", ".geo", "latitude", "longitude", "area_sqm","system:index")]
 
 summary(floss.dat)
 head(floss.dat)
@@ -20,12 +40,11 @@ ggplot(data=floss.dat) +
 
 head(data.frame(floss.dat))
 
-# Clean year data
+#Setting year as a numeric
 floss.dat$Year <- as.numeric(floss.dat$Year)
-floss.dat$Year <- ifelse(floss.dat$Year < 10, paste0("200", floss.dat$Year), paste0("20", floss.dat$Year))
 
-# Get top 10 largest areas
-floss10_dat <- floss.dat[order(floss.dat$area_sqm, decreasing = TRUE), ][1:10, ]
+
+###### Examining polygons
 
 # Convert year to factor for plotting
 floss.dat$Year <- as.factor(floss.dat$Year)
@@ -44,6 +63,15 @@ ggplot(floss.dat, aes(x = Year, y = area_sqm)) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
+# Get top 10 largest areas
+floss10_dat <- floss.dat[order(floss.dat$area_sqm, decreasing = TRUE), ][1:10, ]
+
+#write out top ten largest areas
+write.xlsx(floss10_dat, "~/Google Drive/My Drive/Reidy_research/Hansen exploration/floss10_dat.xlsx", rowNames = FALSE)
+
+###############
+#analyzing NDVI
+################
 # Read NDVI data
 flossdvi <- read.csv("~/Google Drive/My Drive/Reidy_research/Hansen exploration/modis_ndvi_mat_sen_gd50_data.csv")
 
