@@ -108,3 +108,41 @@ Map$addLayer(
   list(min = 0, max = 1, palette = c('white', 'lightgreen', 'darkgreen')),
   'Forest Fractional Cover at MODIS 500m'
 )
+
+# -----------------------------------------------------------------------------
+# 7. Export fractional cover as CSV to Google Drive
+#    Samples the fractional cover image at each MODIS 500m pixel centroid
+#    within the ROI. Each row in the output CSV represents one MODIS pixel
+#    with columns for forest_fraction (0-1), longitude, and latitude.
+# -----------------------------------------------------------------------------
+# Load from saved asset 
+forestFractional <- ee$Image('projects/breidyee/assets/nlcd_forest_fraction_modis')
+
+# Sample directly from asset
+pixelCentroids <- forestFractional$sample(
+  region     = roi,
+  scale      = 500,
+  projection = modisProjection,
+  geometries = TRUE
+)
+
+# Add lat/lon as explicit columns
+pixelCentroids <- pixelCentroids$map(ee_utils_pyfunc(function(feature) {
+  feature$set(
+    'longitude', feature$geometry()$coordinates()$get(0),
+    'latitude',  feature$geometry()$coordinates()$get(1)
+  )
+}))
+
+# Export to Google Drive
+csvTask <- ee_table_to_drive(
+  collection  = pixelCentroids,
+  description = 'nlcd_forest_fraction_points',
+  folder      = 'Reidy_research',
+  fileFormat  = 'CSV',
+  timePrefix  = FALSE
+)
+
+csvTask$start()
+cat('CSV export task started: nlcd_forest_fraction_points\n')
+ee_monitoring(csvTask)
