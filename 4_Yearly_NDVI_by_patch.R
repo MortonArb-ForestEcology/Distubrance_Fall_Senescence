@@ -92,8 +92,18 @@ yearlyJulyNDVI <- function(yr) {
     tileScale  = 4
   )
   
+ 
   fc$map(ee_utils_pyfunc(function(feature) {
-    feature$set('year', yr)
+    ndviMean  <- ee$Algorithms$If(feature$get('ndvi_july_mean'),   feature$get('ndvi_july_mean'),   feature$get('mean'))
+    ndviSd    <- ee$Algorithms$If(feature$get('ndvi_july_stdDev'), feature$get('ndvi_july_stdDev'), feature$get('stdDev'))
+    ndviCount <- ee$Algorithms$If(feature$get('ndvi_july_count'),  feature$get('ndvi_july_count'),  feature$get('count'))
+    
+    feature$set(
+      'year',              yr,
+      'ndvi_july_mean',    ndviMean,
+      'ndvi_july_stdDev',  ndviSd,
+      'ndvi_july_count',   ndviCount
+    )
   }))
 }
 
@@ -140,4 +150,3 @@ if (nrow(ndviFile) >= 1) {
   )
   cat('NDVI yearly series saved locally.\n')
 }
-
