@@ -78,32 +78,39 @@ yearlyJulyNDVI <- function(yr) {
   julyMean <- modisNDVI$
     filter(ee$Filter$calendarRange(yr, yr, 'year'))$
     filter(ee$Filter$calendarRange(7, 7, 'month'))$
-    mean()$
-    rename('ndvi_july')
+    mean()
   
-  reducer <- ee$Reducer$mean()$
-    combine(ee$Reducer$stdDev(), sharedInputs = TRUE)$
-    combine(ee$Reducer$count(),  sharedInputs = TRUE)
+  # ROOT CAUSE OF THE PREVIOUS TWO FAILED ATTEMPTS: when reduceRegions() is
+  # given a SINGLE band + a SIMPLE (single-output) reducer, EE drops any
+  # custom band name and just uses the reducer's GENERIC output name
+  # ('mean', 'stdDev', 'count') for the property — renaming the band via
+  # $rename() has no effect on that. That's why both prior fixes produced
+  # columns under names we weren't asking for, so select() found nothing
+  # and silently dropped them.
+  #
+  # The reliable fix: Reducer.setOutputs() explicitly forces the output
+  # property name, overriding EE's automatic (and here, unhelpful) naming
+  # convention entirely — no guessing required.
+  meanReducer  <- ee$Reducer$mean()$setOutputs(list('ndvi_july_mean'))
+  sdReducer    <- ee$Reducer$stdDev()$setOutputs(list('ndvi_july_stdDev'))
+  countReducer <- ee$Reducer$count()$setOutputs(list('ndvi_july_count'))
   
   fc <- julyMean$reduceRegions(
-    collection = hansenVectors,
-    reducer    = reducer,
-    scale      = 500,
-    tileScale  = 4
+    collection = hansenVectors, reducer = meanReducer, scale = 500, tileScale = 4
+  )
+  fc <- julyMean$reduceRegions(
+    collection = fc, reducer = sdReducer, scale = 500, tileScale = 4
+  )
+  fc <- julyMean$reduceRegions(
+    collection = fc, reducer = countReducer, scale = 500, tileScale = 4
   )
   
- 
+  # NOTE: ndvi_july_stdDev will legitimately be NULL wherever
+  # ndvi_july_count is 0 or 1 — stdDev isn't defined for < 2 samples. Given
+  # how small most patches are relative to a 500m MODIS cell, expect this
+  # to be common, not a bug.
   fc$map(ee_utils_pyfunc(function(feature) {
-    ndviMean  <- ee$Algorithms$If(feature$get('ndvi_july_mean'),   feature$get('ndvi_july_mean'),   feature$get('mean'))
-    ndviSd    <- ee$Algorithms$If(feature$get('ndvi_july_stdDev'), feature$get('ndvi_july_stdDev'), feature$get('stdDev'))
-    ndviCount <- ee$Algorithms$If(feature$get('ndvi_july_count'),  feature$get('ndvi_july_count'),  feature$get('count'))
-    
-    feature$set(
-      'year',              yr,
-      'ndvi_july_mean',    ndviMean,
-      'ndvi_july_stdDev',  ndviSd,
-      'ndvi_july_count',   ndviCount
-    )
+    feature$set('year', yr)
   }))
 }
 
@@ -122,7 +129,7 @@ allYearsNDVI <- allYearsNDVI$select(list(
 # -----------------------------------------------------------------------------
 task <- ee_table_to_drive(
   collection  = allYearsNDVI,
-  description = 'ndvi_yearly_july_by_patch',
+  description = 'ndvi_yearly_july_by_patch_2',
   folder      = 'Reidy_research',
   fileFormat  = 'CSV',
   timePrefix  = FALSE
@@ -137,7 +144,41 @@ ee_monitoring(task)
 library(googledrive)
 
 # Set this to wherever you want local files saved on YOUR machine
-outputDir <- '~/Reidy_research'
+outputDir <- 'outputs'
+if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
+
+Sys.sleep(15)
+ndviFile <- drive_ls(path = 'Reidy_research', pattern = 'ndvi_yearly_july_by_patch')
+if (nrow(ndviFile) >= 1) {
+  drive_download(
+    file      = ndviFile[1, ],
+    path      = file.path(outputDir, 'ndvi_yearly_july_by_patch.csv'),
+    overwrite = TRUE
+  )
+  cat('NDVI yearly series saved locally.\n')
+}
+# -----------------------------------------------------------------------------
+# 5. Export as one long CSV (single batch task — no per-year download loop
+#    needed since we're not joining anything client-side)
+# -----------------------------------------------------------------------------
+task <- ee_table_to_drive(
+  collection  = allYearsNDVI,
+  description = 'ndvi_yearly_july_by_patch_1',
+  folder      = 'Reidy_research',
+  fileFormat  = 'CSV',
+  timePrefix  = FALSE
+)
+task$start()
+cat('NDVI yearly (July-mean) export started: ndvi_yearly_july_by_patch\n')
+ee_monitoring(task)
+
+# -----------------------------------------------------------------------------
+# 6. Pull it down locally
+# -----------------------------------------------------------------------------
+library(googledrive)
+
+# Set this to wherever you want local files saved on YOUR machine
+outputDir <- 'outputs'
 if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
 
 Sys.sleep(15)
