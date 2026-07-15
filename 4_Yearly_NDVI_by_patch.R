@@ -105,12 +105,27 @@ yearlyJulyNDVI <- function(yr) {
     collection = fc, reducer = countReducer, scale = 500, tileScale = 4
   )
   
-  # NOTE: ndvi_july_stdDev will legitimately be NULL wherever
-  # ndvi_july_count is 0 or 1 — stdDev isn't defined for < 2 samples. Given
-  # how small most patches are relative to a 500m MODIS cell, expect this
-  # to be common, not a bug.
+  # NOTE: ndvi_july_stdDev/mean can be genuinely UNDEFINED (not just null —
+  # the key itself absent) on features where zero valid (non-cloud-masked)
+  # pixels intersect the patch at 500m that year. Reducer.count() never has
+  # this problem (0 is always a defined answer), which is why count alone
+  # kept showing up in exports while mean/stdDev vanished — GEE's CSV
+  # exporter infers its column headers from a feature's actual property
+  # keys, and if the sampled feature is missing a key, that whole column
+  # gets dropped from the export, even for other rows that DO have values.
+  #
+  # Fix: explicitly re-set each property to itself. get() on a missing
+  # property returns null, and set() with that null value still creates
+  # the key on the feature — so every feature is now GUARANTEED to carry
+  # all three keys (possibly null), and no feature can cause the column to
+  # disappear from the export.
   fc$map(ee_utils_pyfunc(function(feature) {
-    feature$set('year', yr)
+    feature$set(
+      'year',              yr,
+      'ndvi_july_mean',    feature$get('ndvi_july_mean'),
+      'ndvi_july_stdDev',  feature$get('ndvi_july_stdDev'),
+      'ndvi_july_count',   feature$get('ndvi_july_count')
+    )
   }))
 }
 
@@ -118,54 +133,26 @@ allYearsNDVI <- ee$FeatureCollection(
   lapply(startYear:endYear, yearlyJulyNDVI)
 )$flatten()
 
-allYearsNDVI <- allYearsNDVI$select(list(
-  'patch_uuid', 'loss_year', 'year',
-  'ndvi_july_mean', 'ndvi_july_stdDev', 'ndvi_july_count'
-))
-
 # -----------------------------------------------------------------------------
 # 5. Export as one long CSV (single batch task — no per-year download loop
 #    needed since we're not joining anything client-side)
+#
+#    IMPORTANT: columns are specified via `selectors` on the export call
+#    itself, NOT via collection$select() beforehand. select() + the
+#    exporter's automatic header-inference is what was silently dropping
+#    ndvi_july_mean/stdDev in earlier attempts. `selectors` builds the CSV
+#    header from this explicit list directly, independent of which
+#    properties any individual feature happens to carry.
 # -----------------------------------------------------------------------------
+ndviColumns <- c('patch_uuid', 'loss_year', 'year',
+                 'ndvi_july_mean', 'ndvi_july_stdDev', 'ndvi_july_count')
+
 task <- ee_table_to_drive(
   collection  = allYearsNDVI,
-  description = 'ndvi_yearly_july_by_patch_2',
+  description = 'ndvi_yearly_july_by_patch',
   folder      = 'Reidy_research',
   fileFormat  = 'CSV',
-  timePrefix  = FALSE
-)
-task$start()
-cat('NDVI yearly (July-mean) export started: ndvi_yearly_july_by_patch\n')
-ee_monitoring(task)
-
-# -----------------------------------------------------------------------------
-# 6. Pull it down locally
-# -----------------------------------------------------------------------------
-library(googledrive)
-
-# Set this to wherever you want local files saved on YOUR machine
-outputDir <- 'outputs'
-if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
-
-Sys.sleep(15)
-ndviFile <- drive_ls(path = 'Reidy_research', pattern = 'ndvi_yearly_july_by_patch')
-if (nrow(ndviFile) >= 1) {
-  drive_download(
-    file      = ndviFile[1, ],
-    path      = file.path(outputDir, 'ndvi_yearly_july_by_patch.csv'),
-    overwrite = TRUE
-  )
-  cat('NDVI yearly series saved locally.\n')
-}
-# -----------------------------------------------------------------------------
-# 5. Export as one long CSV (single batch task — no per-year download loop
-#    needed since we're not joining anything client-side)
-# -----------------------------------------------------------------------------
-task <- ee_table_to_drive(
-  collection  = allYearsNDVI,
-  description = 'ndvi_yearly_july_by_patch_1',
-  folder      = 'Reidy_research',
-  fileFormat  = 'CSV',
+  selectors   = ndviColumns,
   timePrefix  = FALSE
 )
 task$start()
