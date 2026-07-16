@@ -100,10 +100,14 @@ treecover2000_r <- ee_as_rast(
 #    meets_forest_threshold flag
 # -----------------------------------------------------------------------------
 # Set this to the SAME local folder Steps 1 and 3 saved their files to
-outputDir <- 'Reidy_research'
+path.google <- "~/Google Drive/My Drive"
+path.dat    <- file.path(path.google, "Reidy_research")
+outputDir   <- path.dat
+if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
 
 patches_sf <- st_read(file.path(outputDir, 'hansen_persistent_loss_patches.gpkg'))
 patch_attrs <- read.csv(file.path(outputDir, 'patch_attribute_table.csv'))
+patch_attrs$meets_forest_threshold <- as.logical(patch_attrs$meets_forest_threshold) 
 
 patches_sf <- merge(
   patches_sf, patch_attrs[, c('patch_uuid', 'meets_forest_threshold', 'forest_cover_mean')],
@@ -244,7 +248,7 @@ patches_ndvi_sf <- merge(patches_sf, ndvi_change, by = 'patch_uuid', all.x = FAL
 p_ndvi_change <- ggplot(patches_ndvi_sf) +
   geom_sf(aes(fill = ndvi_change), color = NA) +
   scale_fill_gradient2(
-    low = 'darkred', mid = 'white', high = 'darkgreen', midpoint = 0,
+    low = 'darkred', mid = 'blue', high = 'darkgreen', midpoint = 0,
     name = 'NDVI change\n(post - pre)'
   ) +
   labs(title = 'NDVI Change Pre- vs Post-Disturbance, by Patch') +
@@ -259,3 +263,4 @@ cat(sprintf('NDVI figures saved to %s/:\n', outputDir),
     '  map_ndvi_change_by_patch.png\n',
     sprintf('(%d of %d patches had enough pre/post NDVI coverage to include in the change map)\n',
             nrow(ndvi_change), n_distinct(ndvi_long$patch_uuid)))
+
