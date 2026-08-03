@@ -51,6 +51,15 @@
 #          since using NDVI's own change to moderate NDVI would be
 #          circular. See Part J's header for why these are treated
 #          differently.
+# Part K — Resolves the two questions Parts F/I/J left open. K1 re-runs
+#          Part I's year-by-year period model on the CLIMATE-CONTROLLED
+#          regional anomaly (patch value minus that year's undisturbed-
+#          forest reference from Step 4c), which supersedes Part F #1's
+#          coarser two-window version and settles whether the delayed
+#          MidGreendown shift is real or regional drift. K2 runs the formal
+#          per-patch severity regression that Part J only plotted.
+#          REQUIRES Step 4c to have produced a non-empty
+#          reference_phenology_by_year.csv.
 #
 # "Before" = NLCD forest cover extent / Hansen treecover2000, i.e. what was
 #            there before disturbance.
@@ -148,10 +157,13 @@ treecover2000_r <- ee_as_rast(
 # 2. Load patches + join the patch attribute table (from Step 3) for the
 #    meets_forest_threshold flag
 # -----------------------------------------------------------------------------
-# Shared output directory (see config.R) — the SAME local folder Steps 1
-# and 3 saved their files to. Sourced via a fixed absolute path (not a bare
-# relative "config.R") so this doesn't depend on R's working directory.
-source(file.path("~/Google Drive/My Drive/Reidy_research/fall color code", "config.R"))
+# Shared output directory — the SAME local folder Steps 1, 3, 4, 4b and 4c
+# write to. Defined directly rather than sourced from a config.R: the config
+# file earlier drafts referenced doesn't exist at that path, so every
+# source() call failed, left outputDir undefined, and broke every read/write
+# below it. Set once, here.
+outputDir <- file.path("~/Google Drive/My Drive", "Reidy_research")
+if (!dir.exists(outputDir)) dir.create(outputDir, recursive = TRUE)
 
 patches_sf <- st_read(file.path(outputDir, 'hansen_persistent_loss_patches.gpkg'))
 patch_attrs <- read.csv(file.path(outputDir, 'patch_attribute_table.csv'))
@@ -989,31 +1001,80 @@ ggsave(file.path(outputDir, 'hist_senescence_duration_change.png'), p_duration_h
 #     variability), so post/pre RATIO normalization is appropriate here,
 #     unlike the raw MidGreendown DOY itself (see Part E's note).
 # -----------------------------------------------------------------------------
+# MATCHED WINDOWS (-3:-1 vs 1:3), both required complete.
+#
+# The earlier version compared an UNBOUNDED pre-window (all pre-loss years,
+# often 10-14 of them) against a 3-year post-window, and required only >=4
+# pre / >=2 post. That guarantees a downward-biased ratio even when nothing
+# real changes, because the sample SD is systematically low at small n:
+# E[s] ~= 0.886*sigma at n=3 versus ~0.981*sigma at n=14. Expected ratio
+# with ZERO true change ~= 0.90 -- essentially exactly where the old
+# histogram peaked. The apparent "timing became more predictable after
+# disturbance" was that artifact, not a finding.
+#
+# Equal window lengths make the bias identical in numerator and denominator
+# so it cancels. Requiring BOTH windows complete (3 of 3 each) means every
+# patch contributes n=3 vs n=3 -- no differential bias by construction.
 interannual_variability <- phenology_long %>%
   group_by(patch_uuid) %>%
   summarise(
-    pre_sd  = sd(midgreendown_doy_mean[years_since_loss < 0], na.rm = TRUE),
-    post_sd = sd(midgreendown_doy_mean[years_since_loss >= 1 & years_since_loss <= 3], na.rm = TRUE),
-    n_pre_years  = sum(years_since_loss < 0 & !is.na(midgreendown_doy_mean)),
-    n_post_years = sum(years_since_loss >= 1 & years_since_loss <= 3 & !is.na(midgreendown_doy_mean)),
+    pre_sd  = sd(midgreendown_doy_mean[years_since_loss %in% -3:-1], na.rm = TRUE),
+    post_sd = sd(midgreendown_doy_mean[years_since_loss %in% 1:3],   na.rm = TRUE),
+    n_pre_years  = sum(years_since_loss %in% -3:-1 & !is.na(midgreendown_doy_mean)),
+    n_post_years = sum(years_since_loss %in% 1:3   & !is.na(midgreendown_doy_mean)),
     .groups = 'drop'
   ) %>%
-  filter(n_pre_years >= 4, n_post_years >= 2, pre_sd > 0) %>%
-  mutate(sd_ratio = post_sd / pre_sd)
+  filter(n_pre_years == 3, n_post_years == 3, pre_sd > 0) %>%
+  mutate(sd_ratio     = post_sd / pre_sd,
+         log2_ratio   = log2(sd_ratio))
+
+# Summarise on the LOG2 ratio and use the MEDIAN, not the mean.
+# With n=3 per window (df=2), the variance ratio follows F(2,2) under the
+# null, whose mean is undefined and whose right tail is extremely heavy --
+# a mean ratio would be dominated by a few patches with a near-zero pre_sd
+# denominator. log2 makes the null distribution symmetric about 0, and the
+# median is well-defined (median of F(2,2) = 1, i.e. log2 = 0).
+median_ratio <- median(interannual_variability$sd_ratio, na.rm = TRUE)
+
+# Formal test: is the log-ratio distribution centred away from 0? Wilcoxon
+# signed-rank rather than a t-test, since even in log space the tails stay
+# heavy at this n.
+wilcox_var <- wilcox.test(interannual_variability$log2_ratio, mu = 0)
+
+cat(sprintf('\nInterannual variability (matched 3yr windows, n = %d patches):\n',
+            nrow(interannual_variability)))
+cat(sprintf('  Median post/pre SD ratio: %.3f\n', median_ratio))
+cat(sprintf('  Wilcoxon signed-rank on log2 ratio vs 0: p = %.4g\n', wilcox_var$p.value))
+if (wilcox_var$p.value >= 0.05) {
+  cat('  -> No detectable change in year-to-year predictability of timing.\n')
+} else if (median_ratio > 1) {
+  cat('  -> Timing became LESS predictable year-to-year after disturbance.\n')
+} else {
+  cat('  -> Timing became MORE predictable year-to-year after disturbance.\n')
+}
 
 p_interannual_sd_hist <- ggplot(interannual_variability, aes(x = sd_ratio)) +
   geom_histogram(bins = 30, fill = 'purple', alpha = 0.7, color = 'white') +
   geom_vline(xintercept = 1, linetype = 'dashed', color = 'grey30') +
+  geom_vline(xintercept = median_ratio, linetype = 'solid', color = 'darkred', linewidth = 0.8) +
+  scale_x_continuous(trans = 'log2',
+                     breaks = c(0.25, 0.5, 1, 2, 4),
+                     labels = c('0.25', '0.5', '1', '2', '4')) +
   labs(title = 'Interannual Variability of MidGreendown Timing, Post vs Pre Disturbance',
        subtitle = paste0('Ratio of post-loss to pre-loss year-to-year stdDev in each patch\'s own\n',
-                         'yearly mean MidGreendown DOY. Values > 1 = timing became LESS predictable\n',
-                         'year-to-year after disturbance. Requires >=4 pre-loss and >=2 post-loss\n',
-                         'years per patch, so this uses a smaller, more data-rich patch subset.'),
-       x = 'Post-loss SD / Pre-loss SD (interannual)', y = 'Number of patches') +
+                         'yearly mean MidGreendown DOY, using MATCHED 3-year windows (-3:-1 vs\n',
+                         '1:3, both complete) so small-sample SD bias cancels rather than\n',
+                         'manufacturing a shift. Log2 x-axis: the null distribution is symmetric\n',
+                         'in log space, not linear. Dashed = no change; solid red = observed median.\n',
+                         sprintf('Median = %.3f, Wilcoxon p = %.3g, n = %d patches.',
+                                 median_ratio, wilcox_var$p.value,
+                                 nrow(interannual_variability))),
+       x = 'Post-loss SD / Pre-loss SD (interannual, log2 scale)',
+       y = 'Number of patches') +
   theme_minimal()
 
 ggsave(file.path(outputDir, 'hist_midgreendown_interannual_variability.png'), p_interannual_sd_hist,
-       width = 8, height = 5.5, dpi = 300)
+       width = 8, height = 6, dpi = 300)
 
 # Bonus (b): within-year spatial heterogeneity, pre vs post -- reuses the
 # midgreendown_doy_stdDev column already computed by Step 4b's reducer.
@@ -1925,3 +1986,170 @@ cat('\n\nPart J results saved to', outputDir, ':\n',
     '  scatter_ndvi_severity_vs_midgreendown_shift.png\n',
     '  ndvi_severity_moderation_results.csv\n\n')
 print(severity_results)
+
+# =============================================================================
+# PART K — Climate-Controlled Period Model + Formal Severity Test
+# =============================================================================
+# Two tests that resolve the open questions left hanging by Parts F, I and J.
+# Both are short; both change how the earlier results should be read.
+#
+# K1 supersedes Part F #1. Part F #1 compared each patch's pre- vs post-
+# disturbance gap from the regional reference using a crude two-window
+# (pre / post yr 1-3) summary. K1 does the same climate correction but with
+# Part I's year-by-year period factor, which is the structure that revealed
+# the delayed MidGreendown response in the first place. Run K1; treat Part
+# F #1's two figures as the earlier, coarser version of the same idea.
+#
+# WHY THE YEAR-SPECIFIC REFERENCE, NOT A LINEAR YEAR TERM: an earlier plan
+# was to add a fixed linear `year` covariate to Part I's model. Step 4c's
+# output shows why that would be inadequate. The regional reference series
+# ranges from 270.1 (2012) to 283.9 (2007) -- a 14-day peak-to-peak swing,
+# between-year SD ~4.2 days -- while its LINEAR trend is only
+# -0.12 +/- 0.14 days/yr (p = 0.41, R^2 = 0.03). A linear term would remove
+# the (negligible, non-significant) trend and leave the large year-to-year
+# swing untouched. Subtracting the year-SPECIFIC reference removes both.
+#
+# Note also that the linear-trend test alone could NOT settle the drift
+# question: its 95% CI runs -0.40 to +0.16 days/yr, and the lower bound
+# over the ~7 years from the pre-window centroid (yr -3) to post_4 implies
+# -2.8 days -- numerically identical to the observed post_4 effect. Hence
+# this stronger test.
+#
+# Requires: lme4, lmerTest, dplyr; phenology_long (Part D),
+# severity_vs_shift (Part J), and reference_phenology_by_year.csv (Step 4c).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# K1. Period model on the REGIONAL ANOMALY (climate-controlled)
+# -----------------------------------------------------------------------------
+reference_phenology <- read.csv(file.path(outputDir, 'reference_phenology_by_year.csv'))
+
+# Guard: Step 4c silently exported an all-NA file on its first run, which fed
+# blank figures into Part F #1 with no error anywhere. Fail loudly instead.
+if (sum(!is.na(reference_phenology$ref_midgreendown_mean)) == 0) {
+  stop('reference_phenology_by_year.csv is empty (all years NA). Re-run Step 4c ',
+       'and confirm its section-4 cell counts before running Part K.')
+}
+
+phenology_long_ref <- phenology_long %>%
+  left_join(reference_phenology %>% select(year, ref_midgreendown_mean), by = 'year') %>%
+  filter(!is.na(ref_midgreendown_mean)) %>%
+  mutate(regional_anomaly = midgreendown_doy_mean - ref_midgreendown_mean)
+
+model_data_anom_period <- phenology_long_ref %>%
+  filter(years_since_loss %in% c(-5:-1, 1:5)) %>%
+  mutate(period = factor(
+    case_when(
+      years_since_loss %in% -5:-1 ~ 'pre',
+      years_since_loss == 1 ~ 'post_1', years_since_loss == 2 ~ 'post_2',
+      years_since_loss == 3 ~ 'post_3', years_since_loss == 4 ~ 'post_4',
+      years_since_loss == 5 ~ 'post_5'),
+    levels = c('pre', 'post_1', 'post_2', 'post_3', 'post_4', 'post_5')))
+
+# No (1|year) here, deliberately: the anomaly has already had the year effect
+# subtracted out by the reference series, so a year random effect would be
+# redundant with it. Leaving it out also makes the reference series visibly
+# responsible for the climate control, rather than splitting that job
+# ambiguously between two mechanisms.
+fit_anom_period <- lmerTest::lmer(
+  regional_anomaly ~ period + (1 | patch_uuid),
+  data = model_data_anom_period
+)
+
+cat('\n=== K1: MidGreendown period effects, CLIMATE-CONTROLLED ===\n')
+print(summary(fit_anom_period))
+
+# Side-by-side against the raw-DOY period model from Part I. This comparison
+# IS the result: if the anomaly estimates hold near the raw ones, the delayed
+# senescence advance survives a real climate control; if they collapse toward
+# zero, Part F #2's trend-residual figure was right and the effect was
+# regional climate all along.
+anom_coefs <- summary(fit_anom_period)$coefficients
+anom_rows  <- rownames(anom_coefs)[rownames(anom_coefs) != '(Intercept)']
+
+period_comparison <- tibble(
+  period            = gsub('^period', '', anom_rows),
+  anomaly_estimate  = anom_coefs[anom_rows, 'Estimate'],
+  anomaly_se        = anom_coefs[anom_rows, 'Std. Error'],
+  anomaly_p         = anom_coefs[anom_rows, 'Pr(>|t|)']
+) %>%
+  left_join(
+    period_results %>%
+      filter(response == 'midgreendown_doy_mean') %>%
+      select(period, raw_estimate = estimate, raw_p = p_value),
+    by = 'period'
+  ) %>%
+  select(period, raw_estimate, raw_p, anomaly_estimate, anomaly_se, anomaly_p) %>%
+  mutate(anomaly_significant = anomaly_p < 0.05)
+
+write.csv(period_comparison,
+          file.path(outputDir, 'period_raw_vs_climate_controlled.csv'), row.names = FALSE)
+
+cat('\nRaw-DOY vs climate-controlled period effects (MidGreendown):\n')
+print(period_comparison)
+
+p_anom_period <- ggplot(period_comparison,
+                        aes(x = factor(period, levels = c('post_1','post_2','post_3','post_4','post_5')))) +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'grey40') +
+  geom_pointrange(aes(y = anomaly_estimate,
+                      ymin = anomaly_estimate - 1.96 * anomaly_se,
+                      ymax = anomaly_estimate + 1.96 * anomaly_se,
+                      color = anomaly_significant),
+                  linewidth = 0.8, size = 0.7) +
+  geom_point(aes(y = raw_estimate), shape = 4, size = 3, color = 'grey45') +
+  scale_color_manual(values = c(`TRUE` = 'steelblue', `FALSE` = 'grey60'), name = 'p < 0.05') +
+  labs(title = 'MidGreendown Effect by Year, Climate-Controlled vs Raw',
+       subtitle = paste0('Points + CI = effect on the regional anomaly (each patch-year minus that\n',
+                         "YEAR's undisturbed-forest reference, Step 4c). Grey x = the raw-DOY\n",
+                         'estimate from Part I, for comparison. Divergence between them is the\n',
+                         'portion of the raw effect attributable to regional climate.'),
+       x = 'Year since disturbance',
+       y = 'MidGreendown anomaly difference from pre-disturbance baseline (days)') +
+  theme_minimal()
+
+ggsave(file.path(outputDir, 'period_effects_climate_controlled.png'), p_anom_period,
+       width = 8.5, height = 6, dpi = 300)
+
+# -----------------------------------------------------------------------------
+# K2. Formal per-patch severity test
+#     Part J's mixed model found no post:|NDVI change| interaction (p = 0.50),
+#     but Part J's own scatter shows a clearly sloped fit. These aren't
+#     contradictory so much as different questions: the panel model asks the
+#     question with a patch random intercept absorbing exactly the
+#     between-patch variation the moderator lives in, which is where its
+#     power goes. This lm asks it directly -- one observation per patch, no
+#     nesting, no random effect competing for the same variance.
+# -----------------------------------------------------------------------------
+fit_severity_lm <- lm(midgreendown_shift ~ ndvi_change, data = severity_vs_shift)
+
+cat('\n\n=== K2: Per-patch severity test (one row per patch, no nesting) ===\n')
+print(summary(fit_severity_lm))
+
+sev_co <- summary(fit_severity_lm)$coefficients
+severity_lm_results <- tibble(
+  test        = 'lm(midgreendown_shift ~ ndvi_change), one row per patch',
+  n_patches   = nrow(severity_vs_shift),
+  estimate    = sev_co['ndvi_change', 'Estimate'],
+  std_error   = sev_co['ndvi_change', 'Std. Error'],
+  p_value     = sev_co['ndvi_change', 'Pr(>|t|)'],
+  r_squared   = summary(fit_severity_lm)$r.squared,
+  significant = sev_co['ndvi_change', 'Pr(>|t|)'] < 0.05
+)
+
+write.csv(severity_lm_results,
+          file.path(outputDir, 'severity_lm_results.csv'), row.names = FALSE)
+print(severity_lm_results)
+
+if (severity_lm_results$significant) {
+  cat('\nSignificant at the patch level. The correct framing is then: severity\n',
+      'DOES predict timing shift patch-to-patch, but the Part J panel model is\n',
+      'underpowered to detect it as an interaction -- NOT "no relationship".\n')
+} else {
+  cat('\nNot significant here either. Part J\'s null interaction stands, and the\n',
+      'apparent slope in the scatter is within noise.\n')
+}
+
+cat(sprintf('\nPart K outputs saved to %s/:\n', outputDir),
+    '  period_effects_climate_controlled.png\n',
+    '  period_raw_vs_climate_controlled.csv\n',
+    '  severity_lm_results.csv\n')
