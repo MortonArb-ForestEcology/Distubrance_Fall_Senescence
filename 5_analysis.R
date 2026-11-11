@@ -1,7 +1,7 @@
 # Patch Step 5: does forest loss change greenness and fall timing?
 # -----------------------------------------------------------------------------
-# Runs entirely in R. Run line by line (Ctrl+Enter) or use Source with Echo
-# (Ctrl+Shift+Enter) so the tables and plots show. A plain "Source" still
+# Run line by line  or use Source with Echo
+#  so the tabl and plots show. A plain "Source" still
 # saves every file but won't show them. With every patch this can take a
 # while (the models have many thousands of patch-years).
 # Needs: dplyr, tidyr, ggplot2, lme4, lmerTest

@@ -1,7 +1,6 @@
 # Patch Step 2: look at the size distribution of the qualifying patches
 # -----------------------------------------------------------------------------
-# Runs entirely in R (no Earth Engine). Run line by line (Ctrl+Enter) or use
-# Source with Echo (Ctrl+Shift+Enter) so the tables and plots show. A plain
+# Run line by line or use source with Echo so the tables and plots show. A plain
 # "Source" still saves every file but won't show them.
 # Needs: dplyr, tidyr, ggplot2
 # Reads:  scaleup_patches/patches_all_labeled.csv   (made by Patch Step 1)

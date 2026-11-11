@@ -1,7 +1,7 @@
 # Patch Step 7: robustness checks for the main results
 # -----------------------------------------------------------------------------
-# Runs entirely in R. Run line by line (Ctrl+Enter) or use Source with Echo
-# (Ctrl+Shift+Enter) so the tables and plots show. It fits about 35 mixed
+#  Run line by line or use Source with Echo
+# so the tabl and plots show. It fits about 35 mixed
 # models on every patch-year, so expect it to take a while.
 # Needs: dplyr, tidyr, ggplot2, lme4, lmerTest
 # Reads (scaleup_patches/timeseries_full/, from Patch Step 4):

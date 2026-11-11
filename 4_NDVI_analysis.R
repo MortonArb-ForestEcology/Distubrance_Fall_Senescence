@@ -1,6 +1,6 @@
 # Patch Step 4: satellite time series for every patch + all nearby uncut forest
 # -----------------------------------------------------------------------------
-# Open in RStudio and use Source with Echo (Ctrl+Shift+Enter) so the tables
+# Run or use Source with Echo so the tables
 # and figure show. A plain "Source" still saves every file but won't show them.
 # Needs: rgee, googledrive, sf, dplyr, tidyr, ggplot2
 # Reads:  scaleup_patches/all_patches.csv / .gpkg, patch_modis_pixels.csv   (Patch Step 3)
@@ -203,7 +203,7 @@ chk <- as.data.frame(t(sapply(chkFeats, function(f)
 names(chk) <- c("longitude", "latitude", "col", "row")
 if (!all(grid_ok(chk$longitude, chk$latitude, chk$col, chk$row))) {
   stop("MODIS grid check failed: pixels don't line up with Earth Engine's grid. ",
-       "Send this message to Claude before going further.", call. = FALSE)
+       "Hey Brendon, it broke again.", call. = FALSE)
 }
 message("MODIS grid check passed.")
 

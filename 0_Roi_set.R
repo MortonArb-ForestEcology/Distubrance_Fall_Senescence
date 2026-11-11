@@ -1,7 +1,7 @@
 # Patch Step 0: choose the study area and map it
 # -----------------------------------------------------------------------------
-# Open in RStudio and run line by line (Ctrl+Enter), or use Source with Echo
-# (Ctrl+Shift+Enter), so the tables and map show in the console/plot pane.
+# Open in RStudio and run line by lineor with source with Echo
+# so tables and map show in the console/plot pane.
 # A plain "Source" still saves every file but won't show the tables or map.
 # pacakges: rgee, sf, dplyr, ggplot2; maps
 #

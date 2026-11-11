@@ -1,8 +1,6 @@
 # Patch Step 8: is the timing shift real, or a change in the greenness curve's shape?
 # -----------------------------------------------------------------------------
-# Open in RStudio and use Source with Echo (Ctrl+Shift+Enter) so the tables
-# and plots show. The Earth Engine part takes about as long as Step 4 did;
-# finished parts are skipped on a re-run, so you can stop R and Source again.
+# Normal run or  Source with Echo 
 # Needs: rgee, googledrive, dplyr, tidyr, ggplot2, lme4, lmerTest
 # Reads:  scaleup_patches/all_patches.csv                     (Patch Step 3)
 #         scaleup_patches/timeseries_full/patch_year_series.csv (Patch Step 4)

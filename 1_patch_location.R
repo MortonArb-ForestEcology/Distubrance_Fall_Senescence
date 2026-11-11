@@ -1,6 +1,6 @@
 # Patch Step 1: find every qualifying forest loss patch in the study area
 # -----------------------------------------------------------------------------
-# Open in RStudio and use Source with Echo (Ctrl+Shift+Enter) so the tables
+# Run wth source with Echo (Ctrl+Shift+Enter) so the tables
 # and map show. A plain "Source" still saves every file but won't show them.
 # Needs: rgee, googledrive, sf, dplyr, ggplot2
 # Reads:  scaleup_patches/ecoregions_conus_l3.gpkg   (made by Patch Step 0)

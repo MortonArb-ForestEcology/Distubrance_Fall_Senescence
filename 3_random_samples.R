@@ -1,7 +1,6 @@
 # Patch Step 3: the full set of patches (no random sample)
 # -----------------------------------------------------------------------------
-# Runs entirely in R (no Earth Engine). Run line by line (Ctrl+Enter) or use
-# Source with Echo (Ctrl+Shift+Enter) so the tables and plots show. A plain
+# Run line by line or with source with Echo so the tables and plots show. A plain
 # "Source" still saves every file but won't show them.
 # Needs: sf, dplyr, ggplot2
 # Reads:  scaleup_patches/patches_all_labeled.csv     (Patch Step 1)
