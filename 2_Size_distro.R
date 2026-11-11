@@ -1,7 +1,8 @@
 # Patch Step 2: look at the size distribution of the qualifying patches
 # -----------------------------------------------------------------------------
-#Run line by line (Ctrl+Enter) or use
-# Source with Echo so the tables and plots show.
+# Runs entirely in R (no Earth Engine). Run line by line (Ctrl+Enter) or use
+# Source with Echo (Ctrl+Shift+Enter) so the tables and plots show. A plain
+# "Source" still saves every file but won't show them.
 # Needs: dplyr, tidyr, ggplot2
 # Reads:  scaleup_patches/patches_all_labeled.csv   (made by Patch Step 1)
 # Saves:  patch_counts_by_cutoff.csv, patch_size_classes.csv,
@@ -9,7 +10,10 @@
 #         patch_size_histogram.png, patch_size_at_least.png,
 #         patch_size_by_region.png, patch_size_by_year.png
 #
-# Use this to choose MIN_SAMPLE_HA for Step 3. 
+# Use this to choose MIN_PATCH_HA for Step 3. The question to answer:
+# how many qualifying patches are left at each size cutoff, and where do they
+# sit relative to one MODIS pixel (~21.5 ha)?
+# Next: choose MIN_PATCH_HA, then run patch_step3_all_patches.R
 # =============================================================================
 
 library(dplyr)

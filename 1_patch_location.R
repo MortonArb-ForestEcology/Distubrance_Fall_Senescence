@@ -1,6 +1,6 @@
 # Patch Step 1: find every qualifying forest loss patch in the study area
 # -----------------------------------------------------------------------------
-# Open in RStudio and use Source with Echo so the tables
+# Open in RStudio and use Source with Echo (Ctrl+Shift+Enter) so the tables
 # and map show. A plain "Source" still saves every file but won't show them.
 # Needs: rgee, googledrive, sf, dplyr, ggplot2
 # Reads:  scaleup_patches/ecoregions_conus_l3.gpkg   (made by Patch Step 0)
@@ -8,7 +8,11 @@
 #   patches_all_labeled.csv     every patch in the study area, with its rules
 #   patches_qualifying.gpkg     polygons of the qualifying patches
 #   map_qualifying_patches.png
-#   by_tile_v2/                 raw download for each tile
+#   by_tile_v3/                 raw download for each tile
+#
+# Uses Hansen Global Forest Change v1.13 (loss through 2025). v1.12 is
+# deprecated in Earth Engine. RUN_TAG is "v3" so nothing from the v1.12 run
+# (v2) is reused.
 #
 # HOW PATCHES ARE KEPT WHOLE AND COUNTED ONCE
 #   Earth Engine can't do the whole eastern US in one job, so the study area
@@ -16,14 +20,16 @@
 #   tiles invisible in the result:
 #     - Each job looks 10 km past its tile (and past the study-area edge), so
 #       a patch near an edge is found WHOLE, not cut off.
-#     - A patch found by two neighboring jobs is kept only from the tile its
-#       ceenter falls in, so it is counted ONCE.
+#     - A patch found by two neighbouring jobs is kept only from the tile its
+#       centre falls in, so it is counted ONCE.
 #   The script then checks that no kept patch is wider than 10 km (a patch
 #   that big could have been cut off) and reports any that are.
+#
+# HOW PATCHES THAT CROSS AN ECOREGION BOUNDARY ARE HANDLED
 #   Ecoregions are not used to cut anything. Each whole patch is assigned to
 #   the ONE Level III ecoregion that holds most of its area. A patch is in the
 #   study if that ecoregion is included. Patches that cross a boundary are
-#   marked (crosses_ecoregion, eco_share).
+#   marked (crosses_ecoregion, eco_share) so you can check them.
 #
 # What it does:
 #   1. Reads the included ecoregions from Step 0 and lists the tiles
@@ -57,7 +63,7 @@ library(ggplot2)
 ee_Initialize(drive = TRUE)
 
 # ---- Settings ---------------------------------------------------------------
-RUN_TAG          <- "v2"    # names the exports; change it if you change any setting below
+RUN_TAG          <- "v3"    # names the exports; change it if you change any setting below
 TEST_RUN         <- FALSE   # TRUE = only the tile with the pilot area. FALSE = everything.
 TEST_POINT       <- c(-79.862539, 37.829550)
 LOSS_YEAR_MIN    <- 2004    # >= 3 years of before data (phenology starts 2001)
@@ -110,7 +116,7 @@ nrow(tiles)   # tiles to process
 # ---- 2. Earth Engine: images and the per-tile job ---------------------------
 studyFC  <- ee$FeatureCollection("EPA/Ecoregions/2013/L3")$
   filter(ee$Filter$inList("us_l3code", as.list(inc_codes)))
-hansen   <- ee$Image("UMD/hansen/global_forest_change_2024_v1_12")
+hansen   <- ee$Image("UMD/hansen/global_forest_change_2025_v1_13")
 lossyear <- hansen$select("lossyear")
 
 qualLoss <- hansen$select("loss")$eq(1)$

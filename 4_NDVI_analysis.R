@@ -1,61 +1,51 @@
-# Patch Step 4: satellite time series for the sampled patches + nearby uncut forest
+# Patch Step 4: satellite time series for every patch + all nearby uncut forest
 # -----------------------------------------------------------------------------
-# Open in RStudio and use Source with Echo so the tables
-# and figure show.
+# Open in RStudio and use Source with Echo (Ctrl+Shift+Enter) so the tables
+# and figure show. A plain "Source" still saves every file but won't show them.
 # Needs: rgee, googledrive, sf, dplyr, tidyr, ggplot2
-# Reads:  scaleup_patches/sample_patches.gpkg   (made by Patch Step 3)
-# Saves (in scaleup_patches/timeseries/):
-#   patch_year_series.csv     one row per patch per year; use rows with in_analysis = TRUE
-#   patch_summary.csv         one row per drawn patch: pixels, controls, in_analysis
-#   pixel_values_long.csv     every pixel, every year
-#   patch_pixels_checked.csv, controls_checked.csv, pixel_values_wide.csv
+# Reads:  scaleup_patches/all_patches.csv / .gpkg, patch_modis_pixels.csv   (Patch Step 3)
+# Saves (in scaleup_patches/timeseries_full/):
+#   patch_year_series.csv   one row per patch per year; use rows with in_analysis = TRUE
+#   patch_summary.csv       one row per patch: core pixels, comparison pixels and
+#                           how many pixels passed each rule, in_analysis
+#   by_part_<VALUES_TAG>/   raw download for each Earth Engine job
 #   first_look_patch_minus_control.png
+# Earth Engine assets (in assetFolder):
+#   full_v3_patches_<k>      patch outlines, part k
+#   full_v3_core_<k>         core MODIS pixel centres, part k
 #
 # What it does:
-#   1. For each sampled patch (and its replacements), finds the MODIS pixels it
-#      touches and works out what share of each pixel was lost ("loss_frac").
-#      Step 3 already made sure every patch covers >= 50% of at least one pixel.
-#      Pixels are named by their place in the global MODIS grid, so the same
-#      pixel always gets the same ID.
-#   2. Picks candidate CONTROL pixels for each patch: MODIS pixels 1-10 km away,
-#      drawn at random (seeded, so it's repeatable).
-#   3. In Earth Engine, for every pixel:
-#        - elevation, share that was hardwood in 2001 (NLCD 41/43), share of the
-#          pixel ever lost (Hansen, any year), share lost within 500 m around it
-#        - July NDVI every year 2001-2024 (MOD13A1, good/marginal quality only)
-#          and how many July composites went into it
-#        - fall timing every year (MCD12Q2): Greenup, Senescence, MidGreendown,
-#          Dormancy as day of year (Jan 1 = 1), plus the quality flag
+#   1. Reads every patch from Step 3 and its core MODIS pixels (>= 50% lost)
+#   2. Sets up the comparison rules for every MODIS pixel: the share that was
+#      hardwood in 2001 (NLCD 41/43), the share ever lost (Hansen v1.13), the
+#      share lost in it and its 8 neighbours (about 500 m around it), and
+#      elevation. These are worked out inside each patch job, only for the
+#      ring around that patch, in small pieces (TILE_SCALE). Making them as one
+#      big image for the whole study area failed: far from the MODIS grid's
+#      centre line each MODIS block is a slanted shape on the 30 m grids, and
+#      Earth Engine couldn't handle pieces that big ("Reprojection output too large").
+#   3. Uploads the patch outlines (simplified by 30 m) and core pixel centres,
+#      in parts of PART_SIZE patches. Parts already uploaded are reused.
+#   4. One Earth Engine job per part. For each patch:
+#        - patch value each year = mean of its core pixels
+#        - comparison value each year = mean of EVERY MODIS pixel 1-10 km from
+#          the patch that was >= 75% hardwood in 2001, <= 5% ever lost, <= 10%
+#          lost in it and its neighbours, and within 100 m elevation of the
+#          patch. No random draw.
+#        - how many pixels in the 1-10 km ring pass each rule
+#      Variables: July NDVI (MOD13A1, good/marginal quality composites only)
+#      and Greenup, Senescence, MidGreendown, Dormancy as day of year
+#      (Jan 1 = 1) plus the quality flag (MCD12Q2, every year Earth Engine has).
 #      Values are read straight from each MODIS pixel -- no resampling.
-
-#### 
-#Greenup, Senescence,Dormancy are relics from previous code and can be removed as needed
-####
-#   4.in R:
-#        - keeps controls that were >= 75% hardwood in 2001, almost never lost
-#          (<= 5% of the pixel), little loss within 500 m (<= 10%), and within
-#          100 m elevation of the patch; up to 10 per patch
-#        - patch value each year = mean of its "core" pixels (>= 50% lost)
-#        - control value each year = mean of that patch's controls
-#        -  For analysis I walk down the random draw order and take the first
-#          100 patches that have at least 3 controls. A sampled patch without
-#          enough uncut forest nearby is replaced by the next patch in the order,
-#          so the 100 stay a random sample of patches that meet every rule.
-#   5. Saves the tables and a first-look figure: patch minus controls, by years
-#      since the loss, for the 100 patches in the analysis set.
+#   5. Downloads each part as it finishes. Finished parts are skipped on a
+#      re-run, so you can stop R and Source again later.
+#   6. Builds the patch-year table (patch minus comparison each year). A patch
+#      is in the analysis if it has at least MIN_CONTROLS comparison pixels.
 #
-# The Earth Engine part runs once and is saved. To change any threshold in
-# the Settings and re-run only the R part, just Source again (it reuses the
-# saved file). If the sample from Step 3 changes, the Earth Engine part is
-# redone automatically. Set FORCE_EE <- TRUE to redo it anyway.
-
-# IMPORTANT! 
-
-#If R stops while Earth Engine is still working, don't start over: copy the
-# export name into RESUME_EXPORT and Source again -- it waits for that export.
-
-
-# Status lines while waiting on Earth Engine use message() 
+# Changed from the random-sample version: every patch, every qualifying
+# comparison pixel, and "loss nearby" = the pixel and its 8 neighbours.
+# If R stops, wait until the Tasks tab shows nothing running, then Source
+# again. Status lines use message() (red in RStudio; that's normal).
 # =============================================================================
 
 library(rgee)
@@ -68,47 +58,36 @@ library(ggplot2)
 ee_Initialize(drive = TRUE)
 
 # ---- Settings ---------------------------------------------------------------
-SEED                 <- 42
-CONTROL_MIN_M        <- 1000   # controls at least this far from the patch
-CONTROL_MAX_M        <- 10000  # ... and no farther than this
-CANDIDATES_PER_PATCH <- 150    # candidate control pixels checked per patch
-N_CONTROLS           <- 10     # controls kept per patch
-MIN_CONTROLS         <- 3      # a patch needs at least this many controls to be used
-N_ANALYSIS           <- 100    # patches in the analysis set
-CORE_FRAC            <- 0.5    # a "core" pixel is at least this share lost (= Step 3's rule)
-CTRL_DECID_MIN       <- 0.75   # control: hardwood share in 2001
-CTRL_LOSS_MAX        <- 0.05   # control: share of the pixel ever lost (5% = ~1 ha)
-CTRL_NEAR_LOSS_MAX   <- 0.10   # control: share lost within NEAR_M around it
-NEAR_M               <- 500    # about one pixel's width: the range of MODIS signal spill-over
-ELEV_TOL_M           <- 100    # control: elevation within this of the patch
-NDVI_YEARS           <- 2001:2024
-MCD_LAST_YEAR        <- 2023   # newest MCD12Q2 year to use (checked against what exists)
-FORCE_EE             <- FALSE
-RESUME_EXPORT        <- ""     # if an export was already started, put its name here
-# (e.g. "sample_pixel_values_20261021_082751") to
-# wait for it instead of starting a new one
+RUN_TAG            <- "v3"     # same as Patch Step 1
+VALUES_TAG         <- "v3a"    # names the Earth Engine jobs; change it if you change any setting below
+CONTROL_MIN_M      <- 1000     # comparison pixels at least this far from the patch
+CONTROL_MAX_M      <- 10000    # ... and no farther than this
+MIN_CONTROLS       <- 3        # a patch needs at least this many comparison pixels to be used
+CORE_FRAC          <- 0.5      # a "core" pixel is at least this share lost (= Step 3's rule)
+CTRL_DECID_MIN     <- 0.75     # comparison: hardwood share in 2001
+CTRL_LOSS_MAX      <- 0.05     # comparison: share of the pixel ever lost
+CTRL_NEAR_LOSS_MAX <- 0.10     # comparison: share lost in the pixel and its 8 neighbours
+ELEV_TOL_M         <- 100      # comparison: elevation within this of the patch
+NDVI_YEARS         <- 2001:2025
+MCD_LAST_YEAR      <- 2025     # newest MCD12Q2 year to try (only years Earth Engine has are used)
+PART_SIZE          <- 1000     # patches per upload part and per Earth Engine job
+SIMPLIFY_M         <- 30       # patch outlines simplified by this much before upload
+TILE_SCALE         <- 16       # Earth Engine works in pieces 1/16 of the usual size (max 16)
 
 outDir      <- file.path("~/Google Drive/My Drive/Reidy_research", "scaleup_patches")
-tsDir       <- file.path(outDir, "timeseries")
-dir.create(tsDir, recursive = TRUE, showWarnings = FALSE)
+tsDir       <- file.path(outDir, "timeseries_full")
+partDir     <- file.path(tsDir, paste0("by_part_", VALUES_TAG))
+dir.create(partDir, recursive = TRUE, showWarnings = FALSE)
 driveFolder <- "Reidy_research"
-cellAsset   <- "projects/breidyee/assets/scaleup_sample_cells"
-ts_file     <- file.path(tsDir, "pixel_values_wide.csv")
+assetFolder <- "projects/breidyee/assets"
+patch_asset <- function(k) paste0(assetFolder, "/full_", RUN_TAG, "_patches_", k)
+core_asset  <- function(k) paste0(assetFolder, "/full_", RUN_TAG, "_core_", k)
 
 # MODIS sinusoidal grid (sphere R = 6371007.181 m; 2400 x 463.3 m pixels per tile)
 SINU <- "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
 X0   <- -20015109.354
 Y0   <-  10007554.677
 PX   <-  463.312716528
-
-cell_square <- function(col, row) {
-  x0 <- X0 + col * PX;  x1 <- x0 + PX
-  y1 <- Y0 - row * PX;  y0 <- y1 - PX
-  st_polygon(list(matrix(c(x0, y0, x1, y0, x1, y1, x0, y1, x0, y0), ncol = 2, byrow = TRUE)))
-}
-cells_sf <- function(df) {   # df needs columns col, row
-  st_sf(df, geometry = st_sfc(mapply(cell_square, df$col, df$row, SIMPLIFY = FALSE), crs = SINU))
-}
 # TRUE where a lon/lat (from Earth Engine) falls in the expected MODIS pixel
 grid_ok <- function(lon, lat, col, row) {
   p  <- st_transform(st_as_sf(data.frame(lon = lon, lat = lat), coords = c("lon", "lat"), crs = 4326), SINU)
@@ -116,376 +95,321 @@ grid_ok <- function(lon, lat, col, row) {
   floor((xy[, 1] - X0) / PX + 0.25) == col & floor((Y0 - xy[, 2]) / PX + 0.25) == row
 }
 
-# ---- 1 & 2. Patch pixels and candidate control pixels (in R) ---------------
-smp <- st_read(file.path(outDir, "sample_patches.gpkg"), quiet = TRUE) %>%
-  st_make_valid() %>%
-  arrange(draw_order)
-table(smp$role)   # sampled patches and replacements
-
-smp_sin <- st_transform(smp, SINU)
-smp_alb <- st_transform(smp, 5070)   # equal-distance-ish, for the 1-10 km ring
-
-patch_px <- list()
-cand     <- list()
-set.seed(SEED)
-for (i in seq_len(nrow(smp))) {
-  g  <- st_geometry(smp_sin)[i]
-  bb <- unname(st_bbox(g))   # xmin, ymin, xmax, ymax
-  
-  # MODIS pixels the patch touches, and the share of each that is inside it
-  cr <- expand.grid(col = floor((bb[1] - X0) / PX):floor((bb[3] - X0) / PX),
-                    row = floor((Y0 - bb[4]) / PX):floor((Y0 - bb[2]) / PX))
-  ov <- suppressWarnings(st_intersection(cells_sf(cr), g))
-  if (nrow(ov) > 0) {
-    patch_px[[i]] <- data.frame(patch_id = smp$patch_id[i], col = ov$col, row = ov$row,
-                                loss_frac = as.numeric(st_area(ov)) / PX^2)
+# Earth Engine helpers
+gi <- function(x, tries = 4) {   # getInfo, retrying when the servers are busy
+  for (k in seq_len(tries)) {
+    out <- tryCatch(x$getInfo(), error = function(e) e)
+    if (!inherits(out, "error")) return(out)
+    if (k == tries || !grepl("timed out|Too many|429|503|Internal", conditionMessage(out))) stop(out)
+    message("  Earth Engine is busy; trying again in 60 seconds...")
+    Sys.sleep(60)
   }
-  
-  # Candidate controls: pixel centres 1-10 km from the patch. The search box is
-  # padded 2x because sinusoidal coordinates stretch distances up to ~1.75x here.
-  pad <- 2 * CONTROL_MAX_M
-  cr2 <- expand.grid(col = floor((bb[1] - pad - X0) / PX):floor((bb[3] + pad - X0) / PX),
-                     row = floor((Y0 - bb[4] - pad) / PX):floor((Y0 - bb[2] + pad) / PX))
-  ctr <- st_as_sf(data.frame(cr2, x = X0 + (cr2$col + 0.5) * PX, y = Y0 - (cr2$row + 0.5) * PX),
-                  coords = c("x", "y"), crs = SINU)
-  d   <- as.numeric(st_distance(st_transform(ctr, 5070), st_geometry(smp_alb)[i]))
-  ok  <- cr2[d > CONTROL_MIN_M & d <= CONTROL_MAX_M, ]
-  ok  <- ok[order(ok$col, ok$row), ]                    # fixed order before the random draw
-  pick <- ok[sample(nrow(ok), min(CANDIDATES_PER_PATCH, nrow(ok))), ]
-  cand[[i]] <- data.frame(patch_id = smp$patch_id[i], col = pick$col, row = pick$row,
-                          cand_order = seq_len(nrow(pick)))
+}
+asset_exists <- function(id) !is.null(tryCatch(ee$data$getAsset(id), error = function(e) NULL))
+ee_states <- function() {   # newest state of each task, if Earth Engine will tell us
+  tl <- tryCatch(ee$data$getTaskList(), error = function(e) NULL)
+  if (is.null(tl) || length(tl) == 0) {
+    return(data.frame(description = character(), state = character(), error = character()))
+  }
+  d <- data.frame(
+    description = vapply(tl, function(x) if (is.null(x$description)) "" else x$description, ""),
+    state       = vapply(tl, function(x) if (is.null(x$state)) "" else x$state, ""),
+    error       = vapply(tl, function(x) if (is.null(x$error_message)) "" else x$error_message, ""),
+    stringsAsFactors = FALSE)
+  d[!duplicated(d$description), ]   # the list is newest first
 }
 
-patch_px <- bind_rows(patch_px) %>% mutate(cell_id = sprintf("c%d_%d", col, row))
-cand     <- bind_rows(cand)     %>% mutate(cell_id = sprintf("c%d_%d", col, row))
+# ---- 1. Every patch and its core pixels -------------------------------------
+allp <- read.csv(file.path(outDir, "all_patches.csv")) %>%
+  arrange(patch_n) %>%
+  mutate(part = ceiling(patch_n / PART_SIZE))
+nrow(allp)        # patches
+max(allp$part)    # Earth Engine jobs (parts of PART_SIZE patches)
 
-cells <- bind_rows(patch_px %>% select(cell_id, col, row),
-                   cand     %>% select(cell_id, col, row)) %>%
-  distinct(cell_id, .keep_all = TRUE) %>%
-  arrange(cell_id)
-cent <- st_as_sf(data.frame(x = X0 + (cells$col + 0.5) * PX, y = Y0 - (cells$row + 0.5) * PX),
+core <- read.csv(file.path(outDir, "patch_modis_pixels.csv")) %>%
+  filter(patch_id %in% allp$patch_id, loss_frac >= CORE_FRAC) %>%
+  left_join(allp %>% select(patch_id, part), by = "patch_id")
+cent <- st_as_sf(data.frame(x = X0 + (core$col + 0.5) * PX, y = Y0 - (core$row + 0.5) * PX),
                  coords = c("x", "y"), crs = SINU) %>% st_transform(4326)
-ll <- st_coordinates(cent)
-cells$lon <- ll[, 1]
-cells$lat <- ll[, 2]
+core_sf <- st_sf(core %>% select(patch_id, col, row, part), geometry = st_geometry(cent))
+nrow(core_sf)                          # core pixels
+summary(as.numeric(table(core$patch_id)))   # core pixels per patch
 
-write.csv(patch_px, file.path(tsDir, "patch_pixels.csv"),        row.names = FALSE)
-write.csv(cand,     file.path(tsDir, "control_candidates.csv"),  row.names = FALSE)
+# ---- 2. Comparison rules for every MODIS pixel ------------------------------
+# Defined here, worked out inside each patch job (section 4) for that patch's
+# ring only. reduceResolution makes the area-weighted 30 m share for each
+# MODIS pixel; the jobs ask for the MODIS grid, so that's the grid it uses.
+modisProj <- ee$ImageCollection("MODIS/061/MOD13A1")$first()$select("NDVI")$projection()
+to_modis  <- function(img) img$reduceResolution(reducer = ee$Reducer$mean(), maxPixels = 65535L)
 
-nrow(patch_px)                     # MODIS pixels touched by the patches
-median(table(patch_px$patch_id))   # median MODIS pixels per patch
-nrow(cand)                         # candidate control pixels
-nrow(cells)                        # unique pixels to look up in Earth Engine
+hansen  <- ee$Image("UMD/hansen/global_forest_change_2025_v1_13")
+lossAny <- hansen$select("loss")$unmask(0)
+decid01 <- ee$ImageCollection("USGS/NLCD_RELEASES/2019_REL/NLCD")$
+  filter(ee$Filter$eq("system:index", "2001"))$first()$
+  select("landcover")$remap(list(41L, 43L), list(1L, 1L), 0)
 
-# ---- 3. Earth Engine: look up every pixel (runs once; result is saved) -------
-# Saved results are reused only if they are for exactly these pixels. If the
-# sample or the control settings changed, they are redone automatically.
-stale <- FALSE
-if (file.exists(ts_file) && !FORCE_EE) {
-  saved_ids <- read.csv(ts_file)$cell_id
-  stale <- !setequal(saved_ids, cells$cell_id)
-  if (stale) {
-    message(sprintf(paste0("Saved Earth Engine results are for a different set of pixels ",
-                           "(%d saved vs %d needed) -- redoing them."),
-                    length(saved_ids), nrow(cells)))
+anyLossM  <- to_modis(lossAny)$rename("any_loss")
+nearLossM <- anyLossM$reduceNeighborhood(reducer = ee$Reducer$mean(),
+                                         kernel  = ee$Kernel$square(radius = 1, units = "pixels"))$
+  rename("near_loss")                                                  # the pixel and its 8 neighbours
+decidM    <- to_modis(decid01)$rename("decid2001")
+elevM     <- to_modis(ee$Image("USGS/SRTMGL1_003")$select("elevation"))$rename("elev")
+
+passHard  <- decidM$gte(CTRL_DECID_MIN)
+passLoss  <- anyLossM$lte(CTRL_LOSS_MAX)
+passNear  <- nearLossM$lte(CTRL_NEAR_LOSS_MAX)
+validCtrl <- passHard$And(passLoss)$And(passNear)
+
+# ---- 3. Upload patch outlines and core pixels, in parts ---------------------
+poly <- st_read(file.path(outDir, "all_patches.gpkg"), quiet = TRUE) %>%
+  mutate(part = ceiling(patch_n / PART_SIZE)) %>%
+  select(patch_id, part) %>%
+  st_transform(5070) %>%
+  st_simplify(dTolerance = SIMPLIFY_M, preserveTopology = TRUE) %>%
+  st_transform(4326) %>%
+  st_make_valid()
+
+uploaded_ids <- function(id) {
+  if (!asset_exists(id)) return(character(0))
+  unlist(gi(ee$FeatureCollection(id)$aggregate_array("patch_id")))
+}
+for (k in sort(unique(allp$part))) {
+  want <- allp$patch_id[allp$part == k]
+  if (!setequal(unique(uploaded_ids(patch_asset(k))), want)) {
+    message(sprintf("Uploading patch outlines, part %d of %d", k, max(allp$part)))
+    sf_as_ee(poly[poly$part == k, "patch_id"], via = "getInfo_to_asset",
+             assetId = patch_asset(k), overwrite = TRUE)
+  }
+  if (!setequal(unique(uploaded_ids(core_asset(k))), want)) {
+    message(sprintf("Uploading core pixels, part %d of %d", k, max(allp$part)))
+    sf_as_ee(core_sf[core_sf$part == k, c("patch_id", "col", "row")], via = "getInfo_to_asset",
+             assetId = core_asset(k), overwrite = TRUE)
   }
 }
-if (FORCE_EE || stale || !file.exists(ts_file)) {
-  if (nzchar(RESUME_EXPORT)) {
-    nm   <- RESUME_EXPORT
-    task <- NULL
-    message("Not starting a new export -- waiting for the one already started: ", nm)
-  } else {
-    
-    # Interactive Earth Engine requests sometimes time out when the servers are
-    # busy. gi() retries a few times before giving up.
-    gi <- function(x, tries = 4) {
-      for (k in seq_len(tries)) {
-        out <- tryCatch(x$getInfo(), error = function(e) e)
-        if (!inherits(out, "error")) return(out)
-        if (k == tries || !grepl("timed out|Too many|429|503|Internal", conditionMessage(out))) stop(out)
-        message("  Earth Engine is busy; trying again in 60 seconds...")
-        Sys.sleep(60)
-      }
-    }
-    
-    # 3a. Upload the pixel squares, in parts small enough for Earth Engine.
-    #     A part already uploaded with exactly the same pixels is reused.
-    cells_poly <- cells_sf(cells) %>% st_transform(4326)
-    parts_idx  <- split(seq_len(nrow(cells_poly)), ceiling(seq_len(nrow(cells_poly)) / 6000))
-    part_ids   <- paste0(cellAsset, "_", seq_along(parts_idx))
-    for (k in seq_along(parts_idx)) {
-      want <- cells_poly$cell_id[parts_idx[[k]]]
-      have <- tryCatch(unlist(gi(ee$FeatureCollection(part_ids[k])$aggregate_array("cell_id"))),
-                       error = function(e) character(0))
-      if (setequal(have, want)) {
-        message(sprintf("Pixels part %d of %d: already uploaded", k, length(parts_idx)))
-        next
-      }
-      message(sprintf("Uploading pixels, part %d of %d", k, length(parts_idx)))
-      sf_as_ee(cells_poly[parts_idx[[k]], c("cell_id", "col", "row", "lon", "lat")],
-               via = "getInfo_to_asset", assetId = part_ids[k], overwrite = TRUE)
-    }
-    partFCs <- lapply(part_ids, function(a) ee$FeatureCollection(a))
-    n_up    <- sum(vapply(partFCs, function(fc) as.numeric(gi(fc$size())), 0))
-    if (n_up != nrow(cells)) stop("Uploaded ", n_up, " pixels, expected ", nrow(cells), call. = FALSE)
-    cellsFC <- Reduce(function(a, b) a$merge(b), partFCs)
-    
-    modisProj <- ee$ImageCollection("MODIS/061/MOD13A1")$first()$select("NDVI")$projection()
-    centroid  <- ee_utils_pyfunc(function(f) f$setGeometry(f$geometry()$centroid(maxError = 1)))
-    
-    # 3b. Quick check that our pixel grid matches Earth Engine's MODIS grid
-    chkFeats <- gi(ee$Image$pixelLonLat()$reduceRegions(
-      collection = partFCs[[1]]$limit(20)$map(centroid),
-      reducer    = ee$Reducer$first(),
-      crs        = modisProj))$features
-    chk <- as.data.frame(t(sapply(chkFeats, function(f)
-      as.numeric(unlist(f$properties[c("longitude", "latitude", "col", "row")])))))
-    names(chk) <- c("longitude", "latitude", "col", "row")
-    if (!all(grid_ok(chk$longitude, chk$latitude, chk$col, chk$row))) {
-      stop("MODIS grid check failed: pixels don't line up with Earth Engine's grid. ",
-           "Send this message to Claude before going further.", call. = FALSE)
-    }
-    message("MODIS grid check passed.")
-    
-    # 3c. Pixel checks at 30 m: loss ever, hardwood 2001, elevation, loss nearby
-    hansen  <- ee$Image("UMD/hansen/global_forest_change_2024_v1_12")
-    hProj   <- hansen$select("loss")$projection()
-    lossAny <- hansen$select("loss")$unmask(0)
-    decid01 <- ee$ImageCollection("USGS/NLCD_RELEASES/2019_REL/NLCD")$
-      filter(ee$Filter$eq("system:index", "2001"))$first()$
-      select("landcover")$remap(list(41L, 43L), list(1L, 1L), 0)
-    elev    <- ee$Image("USGS/SRTMGL1_003")$select("elevation")
-    
-    statImg <- lossAny$rename("any_loss")$
-      addBands(decid01$rename("decid2001"))$
-      addBands(elev$rename("elev"))
-    s1 <- statImg$reduceRegions(collection = cellsFC, reducer = ee$Reducer$mean(),
-                                crs = hProj, tileScale = 4)
-    s2 <- s1$map(ee_utils_pyfunc(function(f) f$setGeometry(f$geometry()$buffer(NEAR_M, 10))))
-    s2 <- lossAny$reduceRegions(collection = s2,
-                                reducer = ee$Reducer$mean()$setOutputs(list("near_loss")),
-                                crs = hProj, tileScale = 4)
-    pts <- s2$map(centroid)
-    
-    # 3d. Time series image: one band per variable per year
-    bands <- list()
-    qaNDVI <- ee_utils_pyfunc(function(img) {
-      img$select("NDVI")$updateMask(img$select("SummaryQA")$lte(1))$multiply(0.0001)
-    })
-    mod13 <- ee$ImageCollection("MODIS/061/MOD13A1")
-    for (yr in NDVI_YEARS) {
-      jul <- mod13$filterDate(sprintf("%d-07-01", yr), sprintf("%d-08-01", yr))$map(qaNDVI)
-      bands[[length(bands) + 1]] <- jul$mean()$rename(paste0("ndvi_", yr))
-      bands[[length(bands) + 1]] <- jul$count()$rename(paste0("ndvin_", yr))
-    }
-    
-    mcd <- ee$ImageCollection("MODIS/061/MCD12Q2")
-    # Which years exist: ask Earth Engine how many images each year has (one call)
-    try_years <- 2001:MCD_LAST_YEAR
-    n_imgs <- unlist(gi(ee$List(lapply(try_years, function(y) {
-      mcd$filter(ee$Filter$calendarRange(y, y, "year"))$size()
-    }))))
-    mcd_years <- try_years[as.numeric(n_imgs) > 0]
-    if (length(mcd_years) == 0) {
-      stop("Earth Engine reported no MCD12Q2 images for 2001-", MCD_LAST_YEAR,
-           ". Send this message to Claude.", call. = FALSE)
-    }
-    message("MCD12Q2 years used: ", min(mcd_years), "-", max(mcd_years),
-            if (length(mcd_years) < length(try_years))
-              paste0(" (missing: ", paste(setdiff(try_years, mcd_years), collapse = ", "), ")"))
-    
-    pheno_in  <- c("Greenup_1", "Senescence_1", "MidGreendown_1", "Dormancy_1")
-    pheno_out <- c("greenup", "senescence", "midgreendown", "dormancy")
-    for (yr in mcd_years) {
-      img <- mcd$filter(ee$Filter$calendarRange(yr, yr, "year"))$first()
-      # MCD12Q2 dates are days since 1970-01-01; convert to day of year (Jan 1 = 1).
-      # (The pilot used Jan 1 = 0, so pilot DOYs are 1 lower.)
-      off <- as.numeric(as.Date(sprintf("%d-01-01", yr)) - as.Date("1970-01-01")) - 1
-      doy <- img$select(pheno_in)$subtract(off)
-      doy <- doy$updateMask(doy$gte(1)$And(doy$lte(366)))$rename(paste0(pheno_out, "_", yr))
-      qa  <- img$select("QA_Overall_1")
-      qa  <- qa$updateMask(qa$lte(3))$rename(paste0("qa_", yr))
-      bands[[length(bands) + 1]] <- doy
-      bands[[length(bands) + 1]] <- qa
-    }
-    bands[[length(bands) + 1]] <- ee$Image$pixelLonLat()$rename(c("chk_lon", "chk_lat"))
-    tsImg <- Reduce(function(a, b) a$addBands(b), bands)
-    
-    # 3e. Read every band at each pixel centre, on the MODIS grid itself
-    out <- tsImg$reduceRegions(collection = pts, reducer = ee$Reducer$first(),
-                               crs = modisProj, tileScale = 4)
-    
-    ts_cols <- c(paste0(c("ndvi_", "ndvin_"), rep(NDVI_YEARS, each = 2)),
+message("All parts uploaded.")
+
+# Quick check that our pixel grid matches Earth Engine's MODIS grid
+chkFeats <- gi(ee$Image$pixelLonLat()$reduceRegions(
+  collection = ee$FeatureCollection(core_asset(1))$limit(20),
+  reducer    = ee$Reducer$first(),
+  crs        = modisProj))$features
+chk <- as.data.frame(t(sapply(chkFeats, function(f)
+  as.numeric(unlist(f$properties[c("longitude", "latitude", "col", "row")])))))
+names(chk) <- c("longitude", "latitude", "col", "row")
+if (!all(grid_ok(chk$longitude, chk$latitude, chk$col, chk$row))) {
+  stop("MODIS grid check failed: pixels don't line up with Earth Engine's grid. ",
+       "Send this message to Claude before going further.", call. = FALSE)
+}
+message("MODIS grid check passed.")
+
+# ---- 4. The per-patch job ---------------------------------------------------
+# Time series image: one band per variable per year
+bands  <- list()
+qaNDVI <- ee_utils_pyfunc(function(img) {
+  img$select("NDVI")$updateMask(img$select("SummaryQA")$lte(1))$multiply(0.0001)
+})
+mod13 <- ee$ImageCollection("MODIS/061/MOD13A1")
+for (yr in NDVI_YEARS) {
+  jul <- mod13$filterDate(sprintf("%d-07-01", yr), sprintf("%d-08-01", yr))$map(qaNDVI)
+  bands[[length(bands) + 1]] <- jul$mean()$rename(paste0("ndvi_", yr))
+}
+
+mcd <- ee$ImageCollection("MODIS/061/MCD12Q2")
+try_years <- 2001:MCD_LAST_YEAR
+n_imgs <- unlist(gi(ee$List(lapply(try_years, function(y) {
+  mcd$filter(ee$Filter$calendarRange(y, y, "year"))$size()
+}))))
+mcd_years <- try_years[as.numeric(n_imgs) > 0]
+range(mcd_years)   # MCD12Q2 years Earth Engine has
+
+pheno_in  <- c("Greenup_1", "Senescence_1", "MidGreendown_1", "Dormancy_1")
+pheno_out <- c("greenup", "senescence", "midgreendown", "dormancy")
+for (yr in mcd_years) {
+  img <- mcd$filter(ee$Filter$calendarRange(yr, yr, "year"))$first()
+  # MCD12Q2 dates are days since 1970-01-01; convert to day of year (Jan 1 = 1).
+  off <- as.numeric(as.Date(sprintf("%d-01-01", yr)) - as.Date("1970-01-01")) - 1
+  doy <- img$select(pheno_in)$subtract(off)
+  doy <- doy$updateMask(doy$gte(1)$And(doy$lte(366)))$rename(paste0(pheno_out, "_", yr))
+  qa  <- img$select("QA_Overall_1")
+  qa  <- qa$updateMask(qa$lte(3))$rename(paste0("qa_", yr))
+  bands[[length(bands) + 1]] <- doy
+  bands[[length(bands) + 1]] <- qa
+}
+tsImg <- Reduce(function(a, b) a$addBands(b), bands)
+
+ts_names    <- c(paste0("ndvi_", NDVI_YEARS),
                  paste0(rep(c(pheno_out, "qa"), times = length(mcd_years)), "_",
-                        rep(mcd_years, each = 5)),
-                 "chk_lon", "chk_lat")
-    sel <- c("cell_id", "col", "row", "lon", "lat",
-             "any_loss", "decid2001", "elev", "near_loss", ts_cols)
-    
-    nm   <- paste0("sample_pixel_values_", format(Sys.time(), "%Y%m%d_%H%M%S"))
-    task <- ee_table_to_drive(collection = out, description = nm, folder = driveFolder,
-                              fileFormat = "CSV", selectors = sel, timePrefix = FALSE)
-    task$start()
-    message("Earth Engine task started: ", nm, "\n",
-            "If R stops before it finishes, DON'T start a new one: put this name in\n",
-            "RESUME_EXPORT at the top of the script and Source again.")
-  }
+                        rep(mcd_years, each = 5)))
+ctrl_names  <- paste0("ctrl_", ts_names)
+share_names <- c("share_hardwood", "share_pixel_loss", "share_near_loss", "share_elevation", "share_controls")
+count_names <- c("n_ring", "n_hardwood", "n_pixel_loss", "n_near_loss", "n_elevation", "n_controls")
+
+per_patch <- ee_utils_pyfunc(function(f) {
+  core_pts <- ee$FeatureCollection(ee$List(f$get("core")))$geometry()   # the patch's core pixel centres
+  ring     <- f$geometry()$buffer(CONTROL_MAX_M, 50)$
+    difference(f$geometry()$buffer(CONTROL_MIN_M, 50), 50)               # 1-10 km from the patch
   
-  # 3f. Wait for the export: check every 2 minutes
+  # Unweighted: every pixel counts once (no partial weights for pixels on the ring's edge)
+  pElev    <- ee$Number(elevM$reduceRegion(
+    reducer = ee$Reducer$mean()$unweighted(), geometry = core_pts, crs = modisProj,
+    tileScale = TILE_SCALE)$get("elev"))
+  elevOk   <- elevM$subtract(pElev)$abs()$lte(ELEV_TOL_M)
+  ctrlMask <- validCtrl$And(elevOk)
+  
+  # One pass over the ring: comparison means each year, and the share of ring
+  # pixels passing each rule
+  shares <- ee$Image$cat(list(passHard, passLoss, passNear, elevOk, ctrlMask))$
+    rename(as.list(share_names))
+  cv <- tsImg$updateMask(ctrlMask)$rename(as.list(ctrl_names))$addBands(shares)$
+    reduceRegion(reducer = ee$Reducer$mean()$unweighted(), geometry = ring, crs = modisProj,
+                 maxPixels = 1e9, tileScale = TILE_SCALE)
+  nRing <- ee$Image$constant(1)$rename("n_ring")$
+    reduceRegion(reducer = ee$Reducer$sum()$unweighted(), geometry = ring, crs = modisProj,
+                 maxPixels = 1e9)
+  pv <- tsImg$reduceRegion(reducer = ee$Reducer$mean()$unweighted(), geometry = core_pts,
+                           crs = modisProj, maxPixels = 1e9)
+  ee$Feature(NULL, pv)$set(cv)$set(nRing)$
+    set("patch_id", f$get("patch_id"))$set("elev_patch", pElev)
+})
+part_job <- function(k) {
+  joined <- ee$Join$saveAll(matchesKey = "core")$apply(
+    primary   = ee$FeatureCollection(patch_asset(k)),
+    secondary = ee$FeatureCollection(core_asset(k)),
+    condition = ee$Filter$equals(leftField = "patch_id", rightField = "patch_id"))
+  ee$FeatureCollection(joined)$map(per_patch)
+}
+
+# ---- 5. Run the jobs and download (finished parts are skipped) --------------
+export_name <- function(k) paste0("full_", VALUES_TAG, "_values_", k)
+part_folder <- function(k) file.path(partDir, paste0("part_", k))
+is_done     <- function(k) file.exists(file.path(part_folder(k), "done.txt"))
+selectors   <- c("patch_id", "elev_patch", "n_ring", share_names, ts_names, ctrl_names)
+
+download_ready <- function(parts) {
+  f <- drive_ls(path = driveFolder, pattern = paste0("full_", VALUES_TAG, "_values_"))
+  for (k in parts) {
+    nm  <- export_name(k)
+    hit <- f[f$name == paste0(nm, ".csv") | startsWith(f$name, paste0(nm, "-")), ]
+    if (nrow(hit) == 0) next
+    dir.create(part_folder(k), recursive = TRUE, showWarnings = FALSE)
+    for (j in seq_len(nrow(hit))) {
+      drive_download(as_id(hit$id[j]), path = file.path(part_folder(k), hit$name[j]), overwrite = TRUE)
+    }
+    writeLines(hit$name, file.path(part_folder(k), "done.txt"))
+  }
+}
+
+all_parts <- sort(unique(allp$part))
+todo <- all_parts[!vapply(all_parts, is_done, TRUE)]
+length(todo)   # parts not downloaded yet (0 = all done, skips straight to section 6)
+failed <- data.frame()
+
+if (length(todo) > 0) {
+  download_ready(todo)                       # anything an earlier run finished
+  todo <- todo[!vapply(todo, is_done, TRUE)]
+  
+  st <- ee_states()
+  waiting <- st$description[st$state %in% c("READY", "RUNNING")]
+  n_started <- 0
+  for (k in todo) {
+    if (export_name(k) %in% waiting) next   # still running from an earlier session
+    t <- ee_table_to_drive(collection = part_job(k), description = export_name(k),
+                           folder = driveFolder, fileFormat = "CSV",
+                           selectors = selectors, timePrefix = FALSE)
+    t$start()
+    n_started <- n_started + 1
+  }
+  message(sprintf("Started %d Earth Engine jobs (%d were already running). Checking every 3 minutes...",
+                  n_started, length(todo) - n_started))
+  
   t0 <- Sys.time()
   repeat {
-    if (!is.null(task)) {
-      st <- task$status()$state
-      if (st %in% c("FAILED", "CANCELLED")) {
-        stop("Earth Engine task ended as ", st, ": ", task$status()$error_message, call. = FALSE)
-      }
-    } else {
-      st <- "see Tasks tab"
-    }
-    f <- drive_ls(path = driveFolder, pattern = nm)
-    if (nrow(f) > 0) break
-    if (difftime(Sys.time(), t0, units = "hours") > 12) {
-      stop("Still no file in Drive after 12 hours. Check the Tasks tab in the GEE Code Editor.",
-           call. = FALSE)
-    }
-    message(format(Sys.time(), "%H:%M"), "  export status: ", st, " -- waiting...")
-    Sys.sleep(120)
+    Sys.sleep(180)
+    download_ready(todo)
+    todo <- todo[!vapply(todo, is_done, TRUE)]
+    st <- ee_states()
+    st <- st[st$description %in% export_name(todo), ]
+    failed <- st[st$state %in% c("FAILED", "CANCELLED"), ]
+    message(sprintf("%s  parts left: %d  (running: %d, waiting: %d, failed: %d)",
+                    format(Sys.time(), "%H:%M"), length(todo), sum(st$state == "RUNNING"),
+                    sum(st$state == "READY"), nrow(failed)))
+    if (length(todo) == 0 || length(todo) == nrow(failed)) break
+    if (difftime(Sys.time(), t0, units = "hours") > 48) break
   }
-  Sys.sleep(60)                                # let every part of a split export arrive
-  f <- drive_ls(path = driveFolder, pattern = nm)
-  message(sprintf("Export found in Drive: %d file(s). Downloading...", nrow(f)))
-  parts <- lapply(seq_len(nrow(f)), function(k) {
-    p <- file.path(tempdir(), f$name[k])
-    drive_download(as_id(f$id[k]), path = p, overwrite = TRUE)
-    read.csv(p)
-  })
-  got <- bind_rows(parts)
-  if (!setequal(got$cell_id, cells$cell_id)) {
-    stop("The downloaded export (", nm, ") is for a different set of pixels than the current ",
-         "sample. If RESUME_EXPORT is set, set it back to \"\" and Source again.", call. = FALSE)
-  }
-  write.csv(got, ts_file, row.names = FALSE)
-} else {
-  message("Using saved Earth Engine results (they match the current sample): ", ts_file)
 }
 
-# ---- 4. Patch and control series (in R) -------------------------------------
-w <- read.csv(ts_file)
-if (!setequal(w$cell_id, cells$cell_id)) {
-  stop("Saved results don't match the current sample. Set FORCE_EE <- TRUE and Source again.",
-       call. = FALSE)
+failed   # parts that failed (empty = none). Source again to retry them.
+
+have    <- all_parts[vapply(all_parts, is_done, TRUE)]
+missing <- setdiff(all_parts, have)
+if (length(missing) > 0) {
+  warning(length(missing), " part(s) not downloaded yet: ", paste(missing, collapse = ", "),
+          ". Source again to retry just those.", call. = FALSE)
 }
-aligned <- grid_ok(w$chk_lon, w$chk_lat, w$col, w$row)
-table(aligned, useNA = "ifany")   # MODIS grid check on every pixel: all should be TRUE
+
+# ---- 6. Patch and comparison series (in R) ----------------------------------
+read_part <- function(k) {
+  files <- list.files(part_folder(k), pattern = "\\.csv$", full.names = TRUE)
+  bind_rows(lapply(files, function(p) read.csv(p, colClasses = c(patch_id = "character"))))
+}
+w <- bind_rows(lapply(have, read_part)) %>% distinct(patch_id, .keep_all = TRUE)
+nrow(w)   # patches downloaded
+
+psum <- allp %>%
+  select(patch_id, patch_n, part, loss_year, area_ha, na_l2code, na_l2name, us_l3code, us_l3name,
+         region, lat, lon, n_core, max_pixel_frac, core_loss_frac) %>%
+  left_join(w %>% select(patch_id, elev_patch, n_ring, all_of(share_names)), by = "patch_id") %>%
+  mutate(n_hardwood   = round(share_hardwood   * n_ring),   # pixels in the 1-10 km ring passing each rule
+         n_pixel_loss = round(share_pixel_loss * n_ring),
+         n_near_loss  = round(share_near_loss  * n_ring),
+         n_elevation  = round(share_elevation  * n_ring),
+         n_controls   = round(share_controls   * n_ring)) %>%
+  mutate(downloaded  = patch_id %in% w$patch_id,
+         n_controls  = coalesce(n_controls, 0),
+         enough_ctrl = n_controls >= MIN_CONTROLS,
+         in_analysis = downloaded & n_core > 0 & enough_ctrl,
+         status = case_when(!downloaded  ~ "not downloaded yet",
+                            n_core == 0  ~ "not used: no pixel >= 50% lost",
+                            !enough_ctrl ~ paste("not used: fewer than", MIN_CONTROLS, "comparison pixels"),
+                            TRUE         ~ "in analysis"))
 
 long <- w %>%
-  select(cell_id, matches("_\\d{4}$")) %>%
-  pivot_longer(-cell_id, names_to = c("metric", "year"), names_pattern = "(.*)_(\\d{4})$") %>%
+  select(patch_id, matches("_\\d{4}$")) %>%
+  pivot_longer(-patch_id, names_to = c("metric", "year"), names_pattern = "^(.*)_(\\d{4})$") %>%
   pivot_wider(names_from = metric, values_from = value) %>%
   mutate(year = as.integer(year))
-write.csv(long, file.path(tsDir, "pixel_values_long.csv"), row.names = FALSE)
 
-cellstat   <- w %>% select(cell_id, any_loss, decid2001, elev, near_loss)
-patch_info <- st_drop_geometry(smp) %>%
-  select(patch_id, role, draw_order, loss_year, area_ha, na_l2code, us_l3code)
-
-# Patch pixels; "other_loss" = loss in the pixel from other years / other patches
-pp <- patch_px %>%
-  left_join(cellstat, by = "cell_id") %>%
-  mutate(other_loss = pmax(any_loss - loss_frac, 0))
-
-psum <- pp %>%
-  group_by(patch_id) %>%
-  summarise(n_pixels      = n(),
-            n_core        = sum(loss_frac >= CORE_FRAC),
-            max_loss_frac = max(loss_frac),
-            elev_patch    = weighted.mean(elev, loss_frac, na.rm = TRUE),
-            .groups = "drop")
-
-used <- pp %>% filter(loss_frac >= CORE_FRAC)   # core pixels only
-
-ctrl <- cand %>%
-  left_join(cellstat, by = "cell_id") %>%
-  left_join(psum %>% select(patch_id, elev_patch), by = "patch_id") %>%
-  mutate(passes = coalesce(decid2001 >= CTRL_DECID_MIN &
-                             any_loss  <= CTRL_LOSS_MAX &
-                             near_loss <= CTRL_NEAR_LOSS_MAX &
-                             abs(elev - elev_patch) <= ELEV_TOL_M, FALSE)) %>%
-  arrange(patch_id, cand_order) %>%
-  group_by(patch_id) %>%
-  mutate(kept = passes & cumsum(passes) <= N_CONTROLS) %>%
-  ungroup()
-
-psum <- patch_info %>%
-  left_join(psum, by = "patch_id") %>%
-  left_join(ctrl %>% group_by(patch_id) %>%
-              summarise(n_candidates = n(), n_controls = sum(kept), .groups = "drop"),
+series <- long %>%
+  left_join(psum %>% select(patch_id, loss_year, area_ha, na_l2code, us_l3code, n_controls, in_analysis),
             by = "patch_id") %>%
-  mutate(has_core    = coalesce(n_core > 0, FALSE),
-         enough_ctrl = coalesce(n_controls >= MIN_CONTROLS, FALSE),
-         eligible    = has_core & enough_ctrl) %>%
-  arrange(draw_order) %>%
-  mutate(in_analysis = eligible & cumsum(eligible) <= N_ANALYSIS,
-         status = case_when(in_analysis  ~ "in analysis",
-                            !has_core    ~ "not used: no pixel >= 50% lost",
-                            !enough_ctrl ~ paste("not used: fewer than", MIN_CONTROLS, "controls"),
-                            TRUE         ~ "not needed (spare replacement)"))
-
-vars   <- c("ndvi", "ndvin", "greenup", "senescence", "midgreendown", "dormancy", "qa")
-nan_na <- function(x) ifelse(is.nan(x), NA_real_, x)
-
-patch_series <- suppressWarnings(used %>% select(patch_id, cell_id) %>% inner_join(long, by = "cell_id")) %>%
-  group_by(patch_id, year) %>%
-  summarise(across(all_of(vars), ~ nan_na(mean(.x, na.rm = TRUE))), n_px = n(), .groups = "drop")
-
-ctrl_series <- suppressWarnings(ctrl %>% filter(kept) %>% select(patch_id, cell_id) %>%
-                                  inner_join(long, by = "cell_id")) %>%
-  group_by(patch_id, year) %>%
-  summarise(across(all_of(vars), ~ nan_na(mean(.x, na.rm = TRUE)), .names = "ctrl_{.col}"),
-            n_ctrl = n(), .groups = "drop")
-
-series <- patch_series %>%
-  full_join(ctrl_series, by = c("patch_id", "year")) %>%
-  left_join(patch_info, by = "patch_id") %>%
-  left_join(psum %>% select(patch_id, in_analysis), by = "patch_id") %>%
   mutate(years_since_loss  = year - loss_year,
          ndvi_diff         = ndvi - ctrl_ndvi,
          greenup_diff      = greenup - ctrl_greenup,
          senescence_diff   = senescence - ctrl_senescence,
          midgreendown_diff = midgreendown - ctrl_midgreendown,
          dormancy_diff     = dormancy - ctrl_dormancy) %>%
-  arrange(draw_order, year)
+  arrange(patch_id, year)
 
-write.csv(psum,   file.path(tsDir, "patch_summary.csv"),        row.names = FALSE)
-write.csv(ctrl,   file.path(tsDir, "controls_checked.csv"),     row.names = FALSE)
-write.csv(pp,     file.path(tsDir, "patch_pixels_checked.csv"), row.names = FALSE)
-write.csv(series, file.path(tsDir, "patch_year_series.csv"),    row.names = FALSE)
+write.csv(psum,   file.path(tsDir, "patch_summary.csv"),     row.names = FALSE)
+write.csv(series, file.path(tsDir, "patch_year_series.csv"), row.names = FALSE)
 
-# ---- 5. Summary + first-look figure -----------------------------------------
-a <- psum %>% filter(in_analysis)
-nrow(a)          # patches in the analysis set (target N_ANALYSIS)
-table(a$role)    # original picks (Sample) and replacements used
-if (nrow(a) < N_ANALYSIS) {
-  warning("Ran out of replacements: only ", nrow(a), " patches meet every rule. ",
-          "Raise N_REPLACEMENTS in Step 3 (the first draws stay the same), re-run Step 3, ",
-          "then re-run this script (it redoes the Earth Engine part by itself).", call. = FALSE)
-}
-table(psum$status, psum$role)   # status of every drawn patch, by original role
-table(psum$enough_ctrl)         # drawn patches with at least MIN_CONTROLS controls (TRUE) or not (FALSE)
+# ---- 7. Summary + first-look figure -----------------------------------------
+table(psum$status)   # every patch: in the analysis or why not
 
-# Share of candidate control pixels passing each check on its own
-ctrl_checks <- round(colMeans(cbind(
-  hardwood   = ctrl$decid2001 >= CTRL_DECID_MIN,
-  pixel_loss = ctrl$any_loss <= CTRL_LOSS_MAX,
-  near_loss  = ctrl$near_loss <= CTRL_NEAR_LOSS_MAX,
-  elevation  = abs(ctrl$elev - ctrl$elev_patch) <= ELEV_TOL_M,
-  all        = ctrl$passes), na.rm = TRUE), 2)
-ctrl_checks
+# By Level II region: patches, how many have enough comparison pixels, and
+# how many comparison pixels a patch typically has
+comp_by_region <- psum %>%
+  filter(downloaded) %>%
+  group_by(region) %>%
+  summarise(patches          = n(),
+            in_analysis      = sum(in_analysis),
+            pct_in_analysis  = round(100 * mean(in_analysis), 1),
+            median_controls  = median(n_controls),
+            .groups = "drop") %>%
+  as.data.frame()
+comp_by_region
 
-table(a$n_core)         # core pixels per patch in the analysis set
-summary(a$n_controls)   # controls kept per patch in the analysis set
-table(a$na_l2code)      # analysis set by Level II region
+summary(psum$n_controls[psum$in_analysis])   # comparison pixels per patch in the analysis
 
 fig <- series %>%
   filter(in_analysis, years_since_loss >= -5, years_since_loss <= 10) %>%
@@ -505,7 +429,8 @@ ggplot(data=fig) +
   geom_line(aes(x=years_since_loss, y=mean), color="darkgreen") +
   geom_point(aes(x=years_since_loss, y=mean), color="darkgreen", size=1) +
   theme_bw() +
-  labs(title="Disturbed patch minus nearby uncut forest, by years since the loss",
-       x="Years since loss (0 = year of loss)", y="Patch minus controls")
+  labs(title="Disturbed patch minus nearby uncut forest, every patch",
+       x="Years since loss (0 = year of loss)", y="Patch minus comparison pixels",
+       caption="Shaded band = 95% confidence interval of the mean across patches (not model-adjusted).")
 
 ggsave(file.path(tsDir, "first_look_patch_minus_control.png"), width=8, height=7, dpi=200)

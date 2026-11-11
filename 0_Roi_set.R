@@ -1,6 +1,8 @@
 # Patch Step 0: choose the study area and map it
 # -----------------------------------------------------------------------------
-# Open in RStudio and run line by line  or with e Source
+# Open in RStudio and run line by line (Ctrl+Enter), or use Source with Echo
+# (Ctrl+Shift+Enter), so the tables and map show in the console/plot pane.
+# A plain "Source" still saves every file but won't show the tables or map.
 # pacakges: rgee, sf, dplyr, ggplot2; maps
 #
 # What it does:
@@ -23,9 +25,8 @@ library(sf)
 library(dplyr)
 library(ggplot2)
 
-ee_Initialize(drive = TRUE)
-
 # ---- Settings ---------------------------------------------------------------
+REDOWNLOAD      <- FALSE          # TRUE = download the ecoregions from Earth Engine again
 ORIGINAL_L2     <- c("8.4", "5.3", "5.2", "8.1")
 BOUNDARY_RULE   <- "east_of_line" # or "level1"
 MIN_SHARE_EAST  <- 0.5            # east_of_line: share of an ecoregion east of the line
@@ -38,15 +39,28 @@ outDir <- file.path("~/Google Drive/My Drive/Reidy_research", "scaleup_patches")
 dir.create(outDir, recursive = TRUE, showWarnings = FALSE)
 
 # ---- 1. All Level III ecoregions --------------------------------------------
-ecoFC <- ee$FeatureCollection("EPA/Ecoregions/2013/L3")$
-  map(ee_utils_pyfunc(function(f) f$simplify(maxError = 250)))
-eco <- ee_as_sf(ecoFC, via = "drive", maxFeatures = 10000) %>%
-  st_transform(5070) %>%
-  st_make_valid() %>%
-  group_by(us_l3code, us_l3name, na_l2code, na_l2name, na_l1code, na_l1name) %>%
-  summarise(.groups = "drop") %>%
-  mutate(us_l3code = as.character(us_l3code),
-         area_km2  = round(as.numeric(st_area(.)) / 1e6))
+# Downloaded from Earth Engine the first time, then reused from the saved file
+# (the ecoregions don't change). Set REDOWNLOAD <- TRUE to fetch them again.
+eco_file <- file.path(outDir, "ecoregions_conus_l3.gpkg")
+if (file.exists(eco_file) && !REDOWNLOAD) {
+  eco <- st_read(eco_file, quiet = TRUE) %>%
+    select(us_l3code, us_l3name, na_l2code, na_l2name, na_l1code, na_l1name, area_km2) %>%
+    mutate(us_l3code = as.character(us_l3code),
+           na_l2code = as.character(na_l2code),
+           na_l1code = as.character(na_l1code))
+} else {
+  ee_Initialize(drive = TRUE)
+  ecoFC <- ee$FeatureCollection("EPA/Ecoregions/2013/L3")$
+    map(ee_utils_pyfunc(function(f) f$simplify(maxError = 250)))
+  eco <- ee_as_sf(ecoFC, via = "drive", maxFeatures = 10000) %>%
+    st_transform(5070) %>%
+    st_make_valid() %>%
+    group_by(us_l3code, us_l3name, na_l2code, na_l2name, na_l1code, na_l1name) %>%
+    summarise(.groups = "drop") %>%
+    mutate(us_l3code = as.character(us_l3code),
+           area_km2  = round(as.numeric(st_area(.)) / 1e6))
+}
+nrow(eco)   # Level III ecoregions in the lower 48 (should be 85)
 
 # ---- 2. The west line -------------------------------------------------------
 original <- eco$na_l2code %in% ORIGINAL_L2
@@ -136,4 +150,3 @@ ggplot(data=inc) +
        subtitle="Colored = included. Black outline = original regions. Red dashed line = their westernmost point.")
 
 ggsave(file.path(outDir, "map_study_ecoregions.png"), width=12, height=8.5, dpi=200)
-
