@@ -19,6 +19,8 @@ resDir <- file.path(outDir, "results_full")
 datRaw <- read.csv(file.path(tsDir, "patch_year_series.csv"))
 datRaw <-datRaw[datRaw$in_analysis & datRaw$years_since_loss>=REL_MIN & datRaw$years_since_loss<=REL_MAX,]
 datRaw$ndvi_diff <- datRaw$ndvi - datRaw$ctrl_ndvi
+datRaw$senescence_diff <- datRaw$senescence - datRaw$ctrl_senescence
+datRaw$midgreendown_diff <- datRaw$midgreendown - datRaw$ctrl_midgreendown
 summary(datRaw)
 
 pch_summary <- aggregate(cbind(ndvi, years_since_loss) ~ patch_id, data=datRaw, FUN=min)
@@ -32,9 +34,10 @@ pchUse <- pch_summary$patch_id[pch_summary$years_since_loss.min==-5 & pch_summar
 datRaw <- datRaw[datRaw$patch_id %in% pchUse,]
 
 # Creating my own summarized thing to graph
-datAgg <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, senescence_diff) ~ years_since_loss, data=datRaw, FUN=mean)
-datAgg[,paste0(c("ndvi", "ctrl_ndvi", "ndvi_diff", "senescence_diff"), ".lwr")] <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, senescence_diff) ~ years_since_loss, data=datRaw, FUN=quantile, 0.025)[,c("ndvi", "ctrl_ndvi", "ndvi_diff", "senescence_diff")]
-datAgg[,paste0(c("ndvi", "ctrl_ndvi", "ndvi_diff", "senescence_diff"), ".upr")] <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, senescence_diff) ~ years_since_loss, data=datRaw, FUN=quantile, 0.975)[,c("ndvi", "ctrl_ndvi", "ndvi_diff", "senescence_diff")]
+# Changed to show the middle 50%
+datAgg <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, midgreendown_diff) ~ years_since_loss, data=datRaw, FUN=mean)
+datAgg[,paste0(c("ndvi", "ctrl_ndvi", "ndvi_diff", "midgreendown_diff"), ".lwr")] <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, midgreendown_diff) ~ years_since_loss, data=datRaw, FUN=quantile, 0.25)[,c("ndvi", "ctrl_ndvi", "ndvi_diff", "midgreendown_diff")]
+datAgg[,paste0(c("ndvi", "ctrl_ndvi", "ndvi_diff", "midgreendown_diff"), ".upr")] <- aggregate(cbind(ndvi, ctrl_ndvi, ndvi_diff, midgreendown_diff) ~ years_since_loss, data=datRaw, FUN=quantile, 0.75)[,c("ndvi", "ctrl_ndvi", "ndvi_diff", "midgreendown_diff")]
 summary(datAgg)
 
 ggplot(data=datAgg) +
@@ -67,13 +70,31 @@ summary(ndviTime)
 # Now doing the same thing with senescence
 
 ggplot(data=datAgg) +
-  geom_ribbon(aes(x=years_since_loss, ymin=senescence_diff.lwr, ymax=senescence_diff.upr, fill="disturb"), alpha=0.5) +
-  geom_line(aes(x=years_since_loss, y=senescence_diff, color="disturb")) +
-  geom_point(aes(x=years_since_loss, y=senescence_diff, color="disturb")) +
+  geom_ribbon(aes(x=years_since_loss, ymin=midgreendown_diff.lwr, ymax=midgreendown_diff.upr, fill="disturb"), alpha=0.5) +
+  geom_line(aes(x=years_since_loss, y=midgreendown_diff, color="disturb")) +
+  geom_point(aes(x=years_since_loss, y=midgreendown_diff, color="disturb")) +
+  scale_color_manual(values=c("disturb"="darkorange", "reference"="darkgreen")) +
+  scale_fill_manual(values=c("disturb"="darkorange", "reference"="darkgreen")) +
+  theme_bw()
+
+set.seed(354)
+pchSamp <- sample(unique(datRaw$patch_id), 100)
+
+ggplot(data=datRaw[datRaw$patch_id %in% pchSamp,]) +
+  # geom_ribbon(aes(x=years_since_loss, ymin=midgreendown_diff.lwr, ymax=midgreendown_diff.upr, fill="disturb"), alpha=0.5) +
+  geom_line(aes(x=years_since_loss, y=midgreendown_diff, color="disturb", group=patch_id), size=0.2, alpha=0.5) +
+  # geom_point(aes(x=years_since_loss, y=midgreendown_diff, color="disturb", group=patch_id)) +
   scale_color_manual(values=c("disturb"="darkorange", "reference"="darkgreen")) +
   scale_fill_manual(values=c("disturb"="darkorange", "reference"="darkgreen")) +
   theme_bw()
 
 
-senesceTime <- lme(senescence_diff ~ as.factor(years_since_loss) - 1, random=c(us_l3code=~1, patch_id=~1), data=datRaw, na.action=na.omit)
-summary(senesceTime)
+midgreendownTime <- lme(midgreendown_diff ~ as.factor(years_since_loss) - 1, random=c(us_l3code=~1, patch_id=~1), data=datRaw[,], na.action=na.omit)
+summary(midgreendownTime)
+
+summary(datRaw[datRaw$patch_id %in% pchSamp,])
+head(datRaw)
+
+# Are there differences by ecoregion?
+midgreendownTime2 <- lme(midgreendown_diff ~ as.factor(us_l3code)*as.factor(years_since_loss) - 1, random=c(us_l3code=~1, patch_id=~1), data=datRaw[,], na.action=na.omit)
+anova(midgreendownTime2)
