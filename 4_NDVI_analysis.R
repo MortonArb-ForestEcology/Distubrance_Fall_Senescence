@@ -40,7 +40,11 @@
 #   5. Downloads each part as it finishes. Finished parts are skipped on a
 #      re-run, so you can stop R and Source again later.
 #   6. Builds the patch-year table (patch minus comparison each year). A patch
-#      is in the analysis if it has at least MIN_CONTROLS comparison pixels.
+#      is in the analysis if it has at least MIN_CONTROLS comparison pixels
+#      and isn't mostly evergreen forest in NLCD 2021 (EVERGREEN_MAX): a
+#      hardwood stand cut and replanted with pine isn't hardwood regrowth.
+#      Changing these only redoes this R part: finished Earth Engine parts are
+#      skipped.
 #
 # Changed from the random-sample version: every patch, every qualifying
 # comparison pixel, and "loss nearby" = the pixel and its 8 neighbours.
@@ -63,6 +67,7 @@ VALUES_TAG         <- "v3a"    # names the Earth Engine jobs; change it if you c
 CONTROL_MIN_M      <- 1000     # comparison pixels at least this far from the patch
 CONTROL_MAX_M      <- 10000    # ... and no farther than this
 MIN_CONTROLS       <- 3        # a patch needs at least this many comparison pixels to be used
+EVERGREEN_MAX      <- 0.5      # patch left out if NLCD 2021 is at least this share evergreen (set 1.1 to keep all)
 CORE_FRAC          <- 0.5      # a "core" pixel is at least this share lost (= Step 3's rule)
 CTRL_DECID_MIN     <- 0.75     # comparison: hardwood share in 2001
 CTRL_LOSS_MAX      <- 0.05     # comparison: share of the pixel ever lost
@@ -357,7 +362,7 @@ nrow(w)   # patches downloaded
 
 psum <- allp %>%
   select(patch_id, patch_n, part, loss_year, area_ha, na_l2code, na_l2name, us_l3code, us_l3name,
-         region, lat, lon, n_core, max_pixel_frac, core_loss_frac) %>%
+         region, lat, lon, n_core, max_pixel_frac, core_loss_frac, after_decid, after_evergreen) %>%
   left_join(w %>% select(patch_id, elev_patch, n_ring, all_of(share_names)), by = "patch_id") %>%
   mutate(n_hardwood   = round(share_hardwood   * n_ring),   # pixels in the 1-10 km ring passing each rule
          n_pixel_loss = round(share_pixel_loss * n_ring),
@@ -367,9 +372,11 @@ psum <- allp %>%
   mutate(downloaded  = patch_id %in% w$patch_id,
          n_controls  = coalesce(n_controls, 0),
          enough_ctrl = n_controls >= MIN_CONTROLS,
-         in_analysis = downloaded & n_core > 0 & enough_ctrl,
+         evergreen   = coalesce(after_evergreen >= EVERGREEN_MAX, FALSE),   # likely replanted with pine
+         in_analysis = downloaded & n_core > 0 & enough_ctrl & !evergreen,
          status = case_when(!downloaded  ~ "not downloaded yet",
                             n_core == 0  ~ "not used: no pixel >= 50% lost",
+                            evergreen    ~ "not used: mostly evergreen in 2021 (likely replanted with pine)",
                             !enough_ctrl ~ paste("not used: fewer than", MIN_CONTROLS, "comparison pixels"),
                             TRUE         ~ "in analysis"))
 
@@ -402,8 +409,8 @@ comp_by_region <- psum %>%
   filter(downloaded) %>%
   group_by(region) %>%
   summarise(patches          = n(),
-            in_analysis      = sum(in_analysis),
             pct_in_analysis  = round(100 * mean(in_analysis), 1),
+            in_analysis      = sum(in_analysis),
             median_controls  = median(n_controls),
             .groups = "drop") %>%
   as.data.frame()

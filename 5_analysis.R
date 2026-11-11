@@ -22,16 +22,21 @@
 # What it does (every patch in the analysis set, years -5 to +10):
 #   1. Describes the analysis set (regions, loss years, sizes).
 #   2. EVENT STUDY, one model per variable: every year compared with the year
-#      before the loss (-1), with random effects for patch, Level III
-#      ecoregion and calendar year. The pre-loss years (-5 to -2) should sit
+#      before the loss (-1), with random effects for patch and Level III
+#      ecoregion. The pre-loss years (-5 to -2) should sit
 #      near 0: that's the check that patches and comparison forest were
 #      behaving alike before the loss. This is the "effect by years since loss"
 #      picture.
-#   3. MAIN RESULTS (model C from the review checks): early (years 1-3) and
+#   3. MAIN RESULTS (model B from the review checks): early (years 1-3) and
 #      late (4-10) vs all years before the loss (-5 to -1), the loss year left
 #      out. Each patch gets its own loss effect (random slopes), so the effect
 #      is tested across patches, not patch-years (no pseudoreplication).
-#      Calendar year and Level III ecoregion are random effects too. Reported
+#      Level III ecoregion is a random effect too. Calendar year is NOT in the
+#      model: the comparison forest already removes year-to-year swings, and
+#      because calendar year = year of loss + years since loss, adding it lets
+#      the model trade the two off and distorts the late effects (Step 6
+#      check: with every patch, model C moved away from the raw data and the
+#      patch-level t-test, model B didn't). Reported
 #      with SE, df, 95% CI, p and Holm-adjusted p (5 variables x 2 periods).
 #      NDVI and MidGreendown are the main outcomes, chosen beforehand.
 #   4. RECOVERY RATE: from year 1 to year 10, how much the effect changes per
@@ -128,7 +133,7 @@ event_rows <- list()
 pretrend   <- list()
 for (var in names(OUTCOMES)) {
   dd <- prep(var) %>% mutate(rel = relevel(factor(years_since_loss), ref = "-1"))
-  E  <- fit("y ~ rel + (1 | us_l3code) + (1 | patch_id) + (1 | year_f)", dd)
+  E  <- fit("y ~ rel + (1 | us_l3code) + (1 | patch_id)", dd)
   co <- coefs(E$m)
   co <- co[grepl("^rel", co$term), ] %>% mutate(rel_year = as.integer(sub("^rel", "", term)))
   event_rows[[var]] <- bind_rows(co, data.frame(term = "rel-1", estimate = 0, se = 0, df = NA,
@@ -164,7 +169,7 @@ event %>%
             ci = sprintf("%.3g to %.3g", ci_lo, ci_hi), p = signif(p, 2)) %>%
   as.data.frame()
 
-# ---- 3. Main results: early and late vs before (model C) --------------------
+# ---- 3. Main results: early and late vs before (model B) --------------------
 main_rows <- list()
 sd_pre    <- c()
 for (var in names(OUTCOMES)) {
@@ -172,10 +177,10 @@ for (var in names(OUTCOMES)) {
   sd_pre[var] <- sd(dd$y[dd$period == "pre"])   # SD of the difference before the loss
   
   # Random slopes by patch: correlated if the model can estimate them, otherwise uncorrelated
-  C  <- fit("y ~ early + late + (1 + early + late | patch_id) + (1 | us_l3code) + (1 | year_f)", dd)
+  C  <- fit("y ~ early + late + (1 + early + late | patch_id) + (1 | us_l3code)", dd)
   re <- "correlated random slopes"
   if (isSingular(C$m)) {
-    C  <- fit("y ~ early + late + (1 + early + late || patch_id) + (1 | us_l3code) + (1 | year_f)", dd)
+    C  <- fit("y ~ early + late + (1 + early + late || patch_id) + (1 | us_l3code)", dd)
     re <- "uncorrelated random slopes"
   }
   main_rows[[var]] <- coefs(C$m, c("early", "late")) %>%
@@ -213,10 +218,10 @@ for (var in names(OUTCOMES)) {
     inner_join(pre_mean, by = "patch_id") %>%
     mutate(y_rel = y - pre_mean,              # change from the patch's own years before the loss
            yr    = years_since_loss - 1)      # 0 = year 1
-  Rv <- fit("y_rel ~ yr + (1 + yr | patch_id) + (1 | us_l3code) + (1 | year_f)", dp)
+  Rv <- fit("y_rel ~ yr + (1 + yr | patch_id) + (1 | us_l3code)", dp)
   re <- "correlated random slopes"
   if (isSingular(Rv$m)) {
-    Rv <- fit("y_rel ~ yr + (1 + yr || patch_id) + (1 | us_l3code) + (1 | year_f)", dp)
+    Rv <- fit("y_rel ~ yr + (1 + yr || patch_id) + (1 | us_l3code)", dp)
     re <- "uncorrelated random slopes"
   }
   recov_rows[[var]] <- coefs(Rv$m, c("(Intercept)", "yr")) %>%
@@ -275,7 +280,7 @@ ggplot(data=main) +
   geom_pointrange(aes(y=factor(period, levels=c("late", "early")), x=estimate, xmin=ci_lo, xmax=ci_hi),
                   color="darkgreen") + # bars = 95% CI
   theme_bw() +
-  labs(title="Effect of forest loss (model C)", y=NULL, x="Patch minus comparison, vs before the loss",
+  labs(title="Effect of forest loss (model B)", y=NULL, x="Patch minus comparison, vs before the loss",
        caption="Bars = 95% confidence intervals. Early = years 1-3, late = years 4-10 after the loss.")
 
 ggsave(file.path(resDir, "main_effects.png"), width=7, height=9, dpi=200)

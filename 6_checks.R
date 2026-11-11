@@ -15,7 +15,8 @@
 #   2. Year of loss by region: is there a bias in when the losses happened?
 #   3. Pseudoreplication: the old Step 5 model next to models that test the
 #      loss effect across patches instead of across patch-years, and a simple
-#      patch-level t-test. Model C is the main model (now used in Step 5).
+#      patch-level t-test. Model B is the main model (used in Step 5); C
+#      (adds calendar year) is kept to show why calendar year is left out.
 #   4. Spatial non-stationarity: Level II ecoregion as a fixed effect with an
 #      interaction, and latitude (south to north)
 #   5. Covariates: patch size, and how much of the core MODIS pixels was lost
@@ -104,8 +105,6 @@ prep_period <- function(var) {
 # its 8 neighbours, and elevation within 100 m of the patch. Each year, patch
 # value minus the mean of those pixels is the difference used in the models.
 # A patch needs at least 3 comparison pixels to be used.
-# The map layer of where comparison forest can come from is the Earth Engine
-# asset full_v3_pixel_rules (band "valid"; elevation is checked per patch).
 # Saves: comparison_pixels_per_patch.csv, comparison_pixels_by_region.csv,
 #        comparison_rules_by_region.csv, comparison_pixels_per_patch.png,
 #        comparison_rules_by_region.png
@@ -226,9 +225,13 @@ ggsave(file.path(chkDir, "patches_per_year_since_loss.png"), width=9, height=5, 
 #   A  Old Step 5 model: random intercepts only. Treats every patch-year as a
 #      replicate, so the p-values are too small.
 #   B  + random slopes: each patch gets its own loss effect, so the effect is
-#      tested across patches (df near the number of patches, ~100).
+#      tested across patches (df near the number of patches). THIS IS THE
+#      MAIN MODEL (Step 5).
 #   C  + calendar year: patches measured in the same year share its weather,
-#      so year is a random effect too. THIS IS THE MAIN MODEL.
+#      so year is a random effect too. With every patch this moved the late
+#      effects away from the raw data and the t-test: calendar year = year of
+#      loss + years since loss, so the model can trade the two off. Kept as a
+#      check only.
 #   T  Simple cross-check: one number per patch (mean after minus mean
 #      before), then a t-test across patches.
 # If a model with correlated random slopes is "singular" (can't estimate all
@@ -237,8 +240,8 @@ ggsave(file.path(chkDir, "patches_per_year_since_loss.png"), width=9, height=5, 
 # Saves: model_comparison.csv, main_results.csv, model_comparison.png
 
 MODEL_LABELS <- c(A = "A: old Step 5 model",
-                  B = "B: + random slopes by patch",
-                  C = "C: + calendar year (main)",
+                  B = "B: + random slopes by patch (main)",
+                  C = "C: + calendar year (check)",
                   T = "T: patch-level t-test")
 
 ctrl_lmer <- lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5))
@@ -336,11 +339,11 @@ cmp %>%
             p = signif(p, 2), p_holm = signif(p_holm, 2)) %>%
   as.data.frame()
 
-# Main results (model C): estimate, SE, df, 95% CI, p, and the effect in
+# Main results (model B): estimate, SE, df, 95% CI, p, and the effect in
 # pre-loss SD units (std_effect: effect divided by the SD of the difference
 # before the loss, so NDVI and days can be compared)
 main <- cmp %>%
-  filter(model == "C") %>%
+  filter(model == "B") %>%
   mutate(sd_pre     = unname(sd_pre[outcome]),
          std_effect = estimate / sd_pre,
          std_ci_lo  = ci_lo / sd_pre,
@@ -373,10 +376,10 @@ ggsave(file.path(chkDir, "model_comparison.png"), width=10, height=12, dpi=200)
 #     interaction: one early and one late effect per region. The test asks if
 #     the regions differ more than chance would give.
 #   - Latitude: does the effect change from south to north? (per degree north)
-# Both keep the main model's random effects (slopes by patch, calendar year).
+# Both keep the main model's random effects (slopes by patch, Level III ecoregion).
 # Saves: region_effects.csv, latitude_effects.csv, region_effects.png
 #        (tests go in interaction_tests.csv, section 5)
-rest       <- "+ (1 | us_l3code) + (1 | year_f)"
+rest       <- "+ (1 | us_l3code)"
 test_rows  <- list()
 region_rows <- list()
 lat_rows   <- list()
@@ -489,11 +492,11 @@ dl <- bind_rows(lapply(names(OUTCOMES), function(var) {
 
 G <- tryCatch(
   fit(paste("z ~ 0 + outcome + outcome:early + outcome:late",
-            "+ (1 + early + late || patch_id) + (1 | patch_id:outcome) + (1 | year_f:outcome)"), dl),
+            "+ (1 + early + late || patch_id) + (1 | patch_id:outcome)"), dl),
   error = function(e) { message("One-model fit failed: ", conditionMessage(e)); NULL })
 
 std_rows <- main %>%
-  transmute(outcome, period = as.character(period), source = "Separate models (model C)",
+  transmute(outcome, period = as.character(period), source = "Separate models (model B)",
             estimate = std_effect, ci_lo = std_ci_lo, ci_hi = std_ci_hi, p = p, p_holm = p_holm)
 if (!is.null(G)) {
   co <- coefs(G$m)
@@ -522,7 +525,7 @@ ggplot(data=std_all) +
   geom_hline(yintercept=0, linetype="dotted") +
   geom_pointrange(aes(x=label, y=estimate, ymin=ci_lo, ymax=ci_hi, color=source),
                   position=position_dodge(width=0.5)) + # bars = 95% CI
-  scale_color_manual(name="", values=c("Separate models (model C)"="darkgreen", "One model, all variables"="purple")) +
+  scale_color_manual(name="", values=c("Separate models (model B)"="darkgreen", "One model, all variables"="purple")) +
   coord_flip() +
   theme_bw() +
   theme(legend.position="bottom") +
