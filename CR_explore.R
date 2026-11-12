@@ -98,3 +98,40 @@ head(datRaw)
 # Are there differences by ecoregion?
 midgreendownTime2 <- lme(midgreendown_diff ~ as.factor(us_l3code)*as.factor(years_since_loss) - 1, random=c(us_l3code=~1, patch_id=~1), data=datRaw[,], na.action=na.omit)
 anova(midgreendownTime2)
+
+
+#brendon attempts looking at differences by ecoregion 
+
+#checking to see if there are enough unique patches per ecoregion to run estiamtes
+table(datRaw$na_l2code[!duplicated(datRaw$patch_id)])
+
+#eco region 8.2 and 8.5  the central plains and the south east coastals plain (and mississippi alluvial plain) have very a very few number
+#unique patches  so filter those out
+datReg <- subset(datRaw, na_l2code != 8.2 & na_l2code != 8.5)
+datReg$region <- as.factor(datReg$na_l2code)
+#creating a column for the years since loss only 
+datReg$after <- as.numeric(datReg$years_since_loss >= 0)
+
+#model looking to see if there is the same yearly pattern in every region
+mgreenregsamefx <- lme(midgreendown_diff~ region + as.factor(years_since_loss), random = ~after | patch_id, data = datReg, method = "ML", na.action = na.omit, control = lmeControl(opt = "optim"))
+
+#model where ever region gets its own yearly pattern
+mgreenregdiffx <- lme(midgreendown_diff~ region * as.factor(years_since_loss), random = ~after | patch_id, data = datReg, method = "ML", na.action = na.omit, control = lmeControl(opt = "optim"))
+
+# does the yearly pattern  of midgreenn down timing differ by region?
+anova(mgreenregsamefx, mgreenregdiffx)
+
+#does the yearly pattern  of mid green down timing differ by region when it comes to early and late timing after loss?
+#setting early and late time, and removing year of disturbance 
+datReg <- datReg[datReg$years_since_loss != 0, ]
+datReg$early <- as.numeric(datReg$years_since_loss >= min(EARLY) & datReg$years_since_loss <= max(EARLY))
+datReg$late  <- as.numeric(datReg$years_since_loss >= min(LATE)  & datReg$years_since_loss <= max(LATE))
+
+# model where the early and late change is the same in every region
+mgreenpersamefx <- lme(midgreendown_diff ~ region + early + late, random = list(patch_id = pdDiag(~ early + late)), data = datReg, method = "ML", na.action = na.omit, control = lmeControl(opt = "optim"))
+
+# model where every region gets its own early and late change
+mgreenperdiffx <- lme(midgreendown_diff ~ region * (early + late), random = list(patch_id = pdDiag(~ early + late)), data = datReg, method = "ML", na.action = na.omit, control = lmeControl(opt = "optim"))
+
+# does the change after the loss differ by region?
+anova(mgreenpersamefx, mgreenperdiffx)
