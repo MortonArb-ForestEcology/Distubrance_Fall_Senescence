@@ -135,3 +135,53 @@ mgreenperdiffx <- lme(midgreendown_diff ~ region * (early + late), random = list
 
 # does the change after the loss differ by region?
 anova(mgreenpersamefx, mgreenperdiffx)
+
+
+#setting up one value per patch for each window 
+#so a patchs several years in a window don't count as separate evidence
+datReg$window <- "before"
+datReg$window[datReg$early == 1] <- "early"
+datReg$window[datReg$late == 1] <- "late"
+
+
+#mean midgreendown difference for each patch in each window
+pchWin <- aggregate(midgreendown_diff ~ patch_id + region + us_l3code + window, data=datReg, FUN=mean)
+head(pchWin)
+
+#each patchs before value, to subtract from its early and late values
+pchBefore <- pchWin[pchWin$window=="before", c("patch_id", "midgreendown_diff")]
+names(pchBefore) <- c("patch_id", "before")
+
+#making one early row and one late row per patch
+pchChange <- merge(pchWin[pchWin$window!="before",], pchBefore, by="patch_id")
+pchChange$change <- pchChange$midgreendown_diff - pchChange$before
+pchChange$window <- as.factor(pchChange$window)
+summary(pchChange)
+
+#separate models for early and late
+#one value per patch, so the random effect is eco region 
+#early
+mgreenearlysame <- lme(change ~ 1, random = ~1 | us_l3code, data = pchChange[pchChange$window=="early",], method = "ML", na.action = na.omit)
+mgreenearlydiff <- lme(change ~ region, random = ~1 | us_l3code, data = pchChange[pchChange$window=="early",], method = "ML", na.action = na.omit)
+#does the early change differ by region?
+anova(mgreenearlysame, mgreenearlydiff)
+
+#late
+mgreenlatesame <- lme(change ~ 1, random = ~1 | us_l3code, data = pchChange[pchChange$window=="late",], method = "ML", na.action = na.omit)
+mgreenlatediff <- lme(change ~ region, random = ~1 | us_l3code, data = pchChange[pchChange$window=="late",], method = "ML", na.action = na.omit)
+#does the late change differ by region?
+anova(mgreenlatesame, mgreenlatediff)
+
+#model with  early and late window as a factor
+#each patch has two rows so the patch is a random effect inside ecoregion
+mgreenwinsame <- lme(change ~ window, random = ~1 | us_l3code/patch_id, data = pchChange, method = "ML", na.action = na.omit)
+mgreenwindiff <- lme(change ~ region * window, random = ~1 | us_l3code/patch_id, data = pchChange, method = "ML", na.action = na.omit)
+#does the change after the loss differ by region?
+anova(mgreenwinsame, mgreenwindiff)
+
+
+#Keeep every year and have year since loss as random effect
+# lme wasn't working well so I'm using lmer, also I had to up the max functions)
+mgreenyrsame <- lmer(midgreendown_diff ~ region + window + (1 + early + late || patch_id) + (1 | years_since_loss), data = datReg, REML = FALSE, control = lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+mgreenyrdiff <- lmer(midgreendown_diff ~ region * window + (1 + early + late || patch_id) + (1 | years_since_loss), data = datReg, REML = FALSE, control = lmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1e5)))
+anova(mgreenyrsame, mgreenyrdiff)
