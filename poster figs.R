@@ -18,6 +18,7 @@ COL_TEXT   <- "white"
 COL_GRID   <- "#3f8a52"   
 COL_GREEN  <- "#9ed39a"    
 COL_ORANGE <- "#f08a4b"    
+COL_LAND  <- "#e5f2df"
 
 # Setting a theme so these will all show up on the poster in the same way and large enough size
 themePoster <- theme_bw() +
@@ -209,14 +210,15 @@ mean(pchChange$change)
 # Checking how many patches land in each hexagon 
 ggplot(data=pchChange) +
   geom_hex(aes(x=lon, y=lat), binwidth=c(1, 1)) +
-  borders("state", colour="gray40", fill=NA) +
+  borders("state", colour="gray40", fill=COL_LAND)  +
   coord_quickmap(xlim=range(pchChange$lon), ylim=range(pchChange$lat)) +
   theme_bw() +
   labs(title="Patches per hexagon", x="Longitude", y="Latitude")
 
 # Average change in each hexagon, only hexagons with at least 10 patches 
+ggplot(data=pchChange) +
   stat_summary_hex(aes(x=lon, y=lat, z=change), fun=function(z) ifelse(length(z)>=10, mean(z), NA), binwidth=c(1, 1)) +
-  borders("state", colour="gray40", fill=NA) +
+  borders("state", colour="gray40", fill=COL_LAND) +
   scale_fill_gradient2(low="darkorange", mid="white", high="steelblue", midpoint=0, limits=c(-8, 8), oob=scales::squish, na.value=NA) +
   coord_quickmap(xlim=range(pchChange$lon), ylim=range(pchChange$lat)) +
   theme_void() +
@@ -224,3 +226,4 @@ ggplot(data=pchChange) +
   labs(fill="Change in\nmid-greendown\n(days)")
 
 ggsave(file.path(figDir, "map_midgreendown_change.png"), width=11, height=9, dpi=300, bg="transparent")
+
