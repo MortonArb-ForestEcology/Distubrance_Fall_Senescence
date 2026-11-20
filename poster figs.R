@@ -148,8 +148,8 @@ ggplot(data=regMGD) +
   scale_x_continuous(limits=c(-5.5, 2), breaks=-5:0) +
   themePoster +
   theme(panel.grid.major.y=element_blank()) +
-  labs(title="Earlier in all five main ecoregions, most in Ozark-Appalachian forests",
-       subtitle="Mid-greendown shift in years 4-10 after loss, by EPA Level II ecoregion. MODIS MCD12Q2 v6.1",
+  labs(title="Earlier in all five main ecoregions",
+       subtitle="Mid-greendown shift in years 4-10 after loss, by EPA Level II ecoregion",
        x="Change in mid-greendown, years 4-10 (days; negative = earlier)", y=NULL,)
 
 ggsave(file.path(figDir, "fig3_regions.png"), width=14, height=7.5, dpi=300, bg="transparent")
